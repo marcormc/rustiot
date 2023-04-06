@@ -32,19 +32,24 @@ impl State {
                     ssid, user, password);
                 State::Provisioned
             }
+            (State::Provisioned, Event::WifiConnected) => {
+                State::WifiConnected
+            }
             (s, e) => {
                 panic!("Wrong transition {:#?}, {:#?}", s, e);
             }
         }
     }
 
-    fn run(&self) {
+    fn run(&self, tx: &mpsc::Sender<Event>) {
         match *self {
             State::Initial => {
                 println!("Initial state. Activating wifi access point.");
             }
             State::Provisioned => {
                 println!("State Provisioned. Trying to connect to wifi station.");
+                thread::sleep(Duration::from_millis(5000));
+                tx.send(Event::WifiConnected).unwrap();
             }
             State::WifiConnected => {
                 println!("State WifiConnected. Trying to connect to server.");
@@ -64,11 +69,29 @@ fn main() {
 
 
     println!("State transitions test.");
+
+    // crea el estado inicial
     let mut state = State::Initial;
+
+    let (tx, rx) = mpsc::channel();
+
+    // Crea tarea para procesar eventos en la máquina de estados
+    // La tarea se implenta en esp-idf-sys con Thread de FreeRTOS.
+    let tx1 = tx.clone();
+    thread::spawn(move || {
+        println!("Thread for FSM event processing started.");
+        loop {
+            let event = rx.recv().unwrap();
+            println!("Event received: {:?}", event);
+            state = state.next(event);
+            println!("New state generated: {:?}", state);
+            state.run(&tx1);
+        }
+    });
 
 
     // envía enventos desde otro thread
-    let (tx, rx) = mpsc::channel();
+    let tx2 = tx.clone();
     thread::spawn(move || {
         println!("Sending event from thread");
         let event = Event::Credentials {
@@ -76,15 +99,11 @@ fn main() {
             user: String::from("marco"),
             password: String::from("secret"),
         };
-        tx.send(event).unwrap();
+        tx2.send(event).unwrap();
+
         // thread::sleep(Duration::from_millis(100));
         // tx.send(Message::WifiDisconnected(20)).unwrap();
     });
 
-    // recibe los eventos en este thread
-    let event = rx.recv().unwrap();
-    println!("Event received: {:?}", event);
-    state = state.next(event);
-    println!("New state generated: {:?}", state);
-    state.run();
 }
+
