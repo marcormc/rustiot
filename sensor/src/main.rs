@@ -6,10 +6,11 @@ use std::sync::mpsc;
 // https://doc.rust-lang.org/std/sync/mpsc/
 use std::thread;
 use std::time::Duration;
+use std::mem::swap;
 
-use esp_idf_svc::nvs::{EspDefaultNvs, EspNvsPartition, EspDefaultNvsPartition};
-use esp_idf_sys;
-use esp_idf_sys::{esp, EspError};
+use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition};
+// use esp_idf_sys;
+// use esp_idf_sys::{esp, EspError};
 
 use embedded_svc::wifi::*;
 use esp_idf_hal::peripheral;
@@ -20,8 +21,12 @@ use esp_idf_svc::wifi::*;
 use anyhow::bail;
 use log::*;
 
+// const SSID: Option<&'static str> = option_env!("WIFI_SSID");
+// const PASS: Option<&'static str> = option_env!("WIFI_PASS");
 const SSID: &str = "harpoland";
 const PASS: &str = "password";
+
+
 use esp_idf_svc::netif::*;
 // use esp_idf_svc::ping;
 // use embedded_svc::ping::Ping;
@@ -52,7 +57,7 @@ enum Event {
 }
 
 impl State {
-    fn next(self, event: Event) -> State {
+    fn next(&self, event: Event) -> State {
         match (self, event) {
             (
                 State::Initial,
@@ -98,6 +103,32 @@ impl State {
     }
 }
 
+// struct Fsm<'a> {
+struct Fsm<'a> {
+    state: State,
+    tx: mpsc::Sender<Event>,
+    sysloop: EspSystemEventLoop,
+    wifi: Box<EspWifi<'a>>,
+    // wifi: &'a mut Box<EspWifi<'a>>,
+}
+
+impl<'a> Fsm<'a> {
+    fn new(tx: mpsc::Sender<Event>,
+           sysloop: EspSystemEventLoop, wifi: Box<EspWifi<'a>>)
+        //sysloop: EspSystemEventLoop, wifi: &'a mut Box<EspWifi<'a>>)
+           -> Self {
+        Self { state: State::Initial, tx, sysloop, wifi }
+    }
+
+    fn process_event(&mut self, event: Event) {
+        // let prev = self.state;
+        // self.state = State::Initial;
+        self.state = self.state.next(event);
+        // swap(self.state.next(event), self.state);
+        self.state.run(&self.tx, &mut self.wifi, self.sysloop.clone());
+    }
+}
+
 fn test_nvs() -> anyhow::Result<()> {
     info!("Leyendo credenciales desde NVS");
     let part = EspDefaultNvsPartition::take()?;
@@ -105,14 +136,14 @@ fn test_nvs() -> anyhow::Result<()> {
 
     let value = "harpoland";
     nvs.set_raw("ssid", value.as_bytes())?;
-    
+
     let exists = nvs.contains("ssid")?;
     println!("Storage contains ssid: {}", exists);
 
     if exists {
         let len = nvs.len("ssid").unwrap().unwrap();
         println!("ssid len: {}", len);
-        
+
         let mut buf: [u8; 100] = [0; 100];
         nvs.get_raw("ssid", &mut buf)?;
         println!("ssid buffer: {:?}", buf);
@@ -125,7 +156,6 @@ fn test_nvs() -> anyhow::Result<()> {
     Ok(())
 }
 
-
 fn main() -> anyhow::Result<()> {
     // It is necessary to call this function once. Otherwise some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
@@ -135,30 +165,30 @@ fn main() -> anyhow::Result<()> {
     esp_idf_svc::log::EspLogger::initialize_default();
 
     test_nvs()?;
-    
-    info!("State transitions test.");
 
+    info!("Inicializando wifi");
     let sysloop = EspSystemEventLoop::take()?;
     let peripherals = Peripherals::take().unwrap();
     // let mut wifi = wifi(peripherals.modem, sysloop.clone())?;
     let mut wifi = Box::new(EspWifi::new(peripherals.modem, sysloop.clone(), None)?);
 
+    info!("Inicializando wifi AP");
     wifi_ap_start(&mut wifi, sysloop.clone()).expect("Imposible activar AP");
-
+    
     println!("Inicialización del wifi terminada");
 
     let (tx, rx) = mpsc::channel();
 
     // crea el estado inicial
-    let mut state = State::Initial;
+    // let mut state = State::Initial;
     // state.run(&tx, &mut wifi, sysloop.clone());
-
 
     // Crea tarea para procesar eventos en la máquina de estados
     // La tarea se implenta en esp-idf-sys con Thread de FreeRTOS.
-    let tx1 = tx.clone();
+    // let tx1 = tx.clone();
+    let mut fsm = Fsm::new(tx.clone(), sysloop, wifi); 
     // let mywifi = Arc::new(Mutex::new(wifi));
-    let _ = thread::Builder::new()
+    thread::Builder::new()
         .name("threadfsm".to_string())
         .stack_size(8000)
         .spawn(move || {
@@ -166,26 +196,30 @@ fn main() -> anyhow::Result<()> {
             loop {
                 let event = rx.recv().unwrap();
                 println!("Event received: {:?}", event);
-                state = state.next(event);
-                println!("New state generated: {:?}", state);
-                state.run(&tx1, &mut wifi, sysloop.clone());
+                fsm.process_event(event);
+                //state = state.next(event);
+                println!("New state generated: {:?}", fsm.state);
+                //state.run(&tx1, &mut wifi, sysloop.clone());
             }
-        });
+        })?;
+
 
     // envía enventos desde otro thread
     // let tx2 = tx.clone();
-    // thread::spawn(move || {
-    //     println!("Sending event from thread");
-    //     let event = Event::Credentials {
-    //         ssid: String::from("harpoland"),
-    //         user: String::from("marco"),
-    //         password: String::from("secret"),
-    //     };
-    //     tx2.send(event).unwrap();
-    //     // thread::sleep(Duration::from_millis(100));
-    // });
+    thread::spawn(move || {
+        println!("Sending event from thread");
+        let event = Event::Credentials {
+            ssid: String::from("harpoland"),
+            user: String::from("marco"),
+            password: String::from("secret"),
+        };
+        tx.send(event).unwrap();
+        // thread::sleep(Duration::from_millis(100));
+    });
+    // tr.join().unwrap();
     Ok(())
 }
+
 
 fn wifi(
     modem: impl peripheral::Peripheral<P = esp_idf_hal::modem::Modem> + 'static,
@@ -265,22 +299,18 @@ fn wifi(
     Ok(wifi)
 }
 
-
-
-fn wifi_ap_start(wifi: &mut Box<EspWifi>, sysloop: EspSystemEventLoop)
-                 -> anyhow::Result<()> {
-    wifi.set_configuration(&Configuration::AccessPoint(
-        AccessPointConfiguration {
-            ssid: "aptest".into(),
-            channel: 1,
-            ..Default::default()
-        },
-    )).expect("Error configurando wifi");
+fn wifi_ap_start(wifi: &mut Box<EspWifi>, sysloop: EspSystemEventLoop) -> anyhow::Result<()> {
+    wifi.set_configuration(&Configuration::AccessPoint(AccessPointConfiguration {
+        ssid: "aptest".into(),
+        channel: 1,
+        ..Default::default()
+    }))
+    .expect("Error configurando wifi");
 
     wifi.start().expect("No se puede empezar el wifi");
 
     info!("Starting wifi...");
-    
+
     // let sysloop = EspSystemEventLoop::take()?;
     if !WifiWait::new(&sysloop)?
         .wait_with_timeout(Duration::from_secs(20), || wifi.is_started().unwrap())
