@@ -156,7 +156,6 @@ impl<'a> Fsm<'a> {
         info!("******** Running state {:?}", self.state);
         match &self.state {
             State::Initial => {
-                info!("Entering State::Initial.");
                 let ssid = read_nvs_string(&mut self.nvs, "ssid").unwrap();
                 let password = read_nvs_string(&mut self.nvs, "password").unwrap();
                 if let (Some(ssid), Some(password)) = (ssid, password) {
@@ -181,26 +180,26 @@ impl<'a> Fsm<'a> {
             }
             State::Provisioned {
                 ssid,
-                user,
+                user: _,
                 password,
             } => {
-                info!("Entering State::Provisioned.");
                 info!("Trying to connect to wifi station.");
-                info!("Using credentials {ssid}, {user}, {password}.");
+                info!("Using credentials {ssid}, {password}.");
+                // stop http server if running
                 if self.httpserver.is_some() {
                     info!("Deactivating HTTP server");
                     self.httpserver = None
                 }
-                // almacenamiento de credenciales en NVS
+                // store credentials in NVS
                 self.nvs.set_raw("ssid", ssid.as_bytes()).unwrap();
                 self.nvs.set_raw("password", password.as_bytes()).unwrap();
-                // thread::sleep(Duration::from_millis(10000));
+                // connect to wifi using the credentials
+                // TODO: handle possible errors, retry on error, backoff
                 wifi_sta_start(&mut self.wifi, &self.sysloop).expect("Error activating STA");
-                info!("Sending Event::WifiConnected from State::Provisioned.");
                 self.tx.send(Event::WifiConnected).unwrap();
             }
             State::WifiConnected => {
-                info!("State WifiConnected. Trying to connect to server.");
+                info!("State WifiConnected. Now connect to server (not implemented)");
             }
             // State::ServerConnected => {
             //     info!("State ServerConnected. Start sending periodic data.");
