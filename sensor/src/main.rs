@@ -8,9 +8,16 @@ use std::thread;
 use std::time::Duration;
 // use std::mem::swap;
 
-use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition};
+// use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition};
 // use esp_idf_sys;
 // use esp_idf_sys::{esp, EspError};
+
+use esp_idf_svc::{
+    // eventloop::EspSystemEventLoop,
+    http::server::{Configuration, EspHttpServer},
+    nvs::{EspDefaultNvs, EspDefaultNvsPartition}, errors::EspIOError,
+};
+use embedded_svc::{http::Method, io::Write};
 
 use embedded_svc::wifi::*;
 use esp_idf_hal::peripheral;
@@ -19,6 +26,7 @@ use esp_idf_svc::eventloop::*;
 use esp_idf_svc::wifi::*;
 
 use anyhow::bail;
+use esp_idf_sys::CONFIG_NEWLIB_STDOUT_LINE_ENDING_CRLF;
 use log::*;
 
 // const SSID: Option<&'static str> = option_env!("WIFI_SSID");
@@ -30,14 +38,15 @@ use esp_idf_svc::netif::*;
 // use esp_idf_svc::ping;
 // use embedded_svc::ping::Ping;
 
-// use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex};
 
 use embedded_svc::storage::RawStorage;
 
 /// Estados de la máquina de estados finitos
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq)]
 enum State {
-    Initial,
+    // Initial { httpserver: Option<EspHttpServer> },
+    Initial, // { httpserver: Box<EspHttpServer> },
     Provisioned {
         ssid: String,
         user: String,
@@ -45,6 +54,7 @@ enum State {
     },
     WifiConnected,
     ServerConnected,
+    Failure,
 }
 
 /// Eventos que se pueden pasar entre threads a la máquina de estados.
@@ -64,7 +74,7 @@ enum Event {
 
 impl State {
     /// Procesa los eventos según el estado actual.
-    fn next(&self, event: Event) -> State {
+    fn next(self, event: Event) -> State {
         println!("next, state {:?}, event {:?}", self, event);
         match (self, event) {
             (
@@ -76,6 +86,7 @@ impl State {
                 },
             ) => {
                 // println!("ssid={}, user={}, password={}", ssid, user, password);
+                info!("Recibido evento de provisionamiento");
                 State::Provisioned {
                     ssid,
                     user,
@@ -96,73 +107,16 @@ impl State {
             ) => State::WifiConnected,
             (State::Provisioned { .. }, Event::SensorData(data)) => {
                 info!("Ignoring data (initial) {}", data);
-                self.clone()
+                // self.clone()
+                State::Failure
             }
 
             (s, e) => {
                 // panic!("Wrong transition {:#?}, {:#?}", s, e);
                 error!("Wrong transition {:#?}, {:#?}", s, e);
-                s.clone()
-            }
-        }
-    }
-
-    /// Ejecuta las acciones necesarias al entrar en cada estado
-    fn run(
-        &self,
-        tx: &mpsc::Sender<Event>,
-        wifi: &mut Box<EspWifi>,
-        sysloop: EspSystemEventLoop,
-        nvs: &mut EspDefaultNvs,
-        // fsm: &Fsm,
-    ) {
-        match self {
-            State::Initial => {
-                info!("Entering State::Initial.");
-                let ssid = read_nvs_string(nvs, "ssid").unwrap();
-                let password = read_nvs_string(nvs, "password").unwrap();
-                if let (Some(ssid), Some(password)) = (ssid, password) {
-                    info!(
-                        "Credentials from NVS: ssid = {}, password = {}",
-                        ssid, password
-                    );
-                    // provisioned: generate event to change state
-                    let event = Event::Credentials {
-                        ssid,
-                        user: String::from("marco"),
-                        password,
-                    };
-                    tx.send(event).unwrap();
-                } else {
-                    info!("Credentials not found in NVS. Activating wifi AP.");
-                    wifi_ap_start(wifi, sysloop).expect("Error activating AP");
-                    info!("Wifi AP started.");
-                    // TODO: iniciar servidor HTTP.
-                    // TODO: Provisionamiento temporal para depurar.
-                    let ssid = "harpoland";
-                    let password = "alcachofatoxica";
-                    nvs.set_raw("ssid", ssid.as_bytes()).unwrap();
-                    nvs.set_raw("password", password.as_bytes()).unwrap();
-                }
-            }
-            State::Provisioned {
-                ssid,
-                user,
-                password,
-            } => {
-                info!("Entering State::Provisioned.");
-                info!("Trying to connect to wifi station.");
-                info!("Using credentials {ssid}, {user}, {password}.");
-                // TODO: conectar al wifi.
-                thread::sleep(Duration::from_millis(10000));
-                info!("Sending Event::WifiConnected from State::Provisioned.");
-                tx.send(Event::WifiConnected).unwrap();
-            }
-            State::WifiConnected => {
-                info!("State WifiConnected. Trying to connect to server.");
-            }
-            State::ServerConnected => {
-                info!("State ServerConnected. Start sending periodic data.");
+                //s.clone()
+                //State::Failure
+                s
             }
         }
     }
@@ -175,6 +129,7 @@ struct Fsm<'a> {
     sysloop: EspSystemEventLoop,
     wifi: Box<EspWifi<'a>>,
     nvs: EspDefaultNvs,
+    httpserver: Option<EspHttpServer>,
 }
 
 impl<'a> Fsm<'a> {
@@ -190,25 +145,155 @@ impl<'a> Fsm<'a> {
             sysloop,
             wifi,
             nvs,
+            httpserver: None,
         };
-        fsm.state
-            .run(&fsm.tx, &mut fsm.wifi, fsm.sysloop.clone(), &mut fsm.nvs);
+        fsm.run();
         fsm
     }
 
-    fn process_event(&mut self, event: Event) {
+    fn process_event(mut self, event: Event) -> Fsm<'a> {
+        // Old state is being discarded here (consumed).
+        // In the process, the fsm must be consumed too (self.state is mutable ref)
         self.state = self.state.next(event);
-        // Old state is being discarded here.
-        // TODO: intentar consumir self en llamada a State.next
+
         // swap(self.state.next(event), self.state);
-        self.state.run(
-            &self.tx,
-            &mut self.wifi,
-            self.sysloop.clone(),
-            &mut self.nvs,
-        );
+        self.run();
+        self
+    }
+
+    // fn process_event(&mut self, event: Event) {
+    //     // Old state is being discarded here (consumed).
+    //     self.state = self.state.next(event);
+    //     // std::mem::replace(&mut self.state, self.state.next(event));
+    //     // std::mem::swap(self.state.next(event), self.state);
+    //     self.state.run(
+    //         &self.tx,
+    //         &mut self.wifi,
+    //         self.sysloop.clone(),
+    //         &mut self.nvs,
+    //     );
+    // }
+
+    /// Ejecuta las acciones necesarias al entrar en cada estado
+    fn run(
+        &mut self, // tx: &mpsc::Sender<Event>,
+                   // wifi: &mut Box<EspWifi>,
+                   // sysloop: EspSystemEventLoop,
+                   // nvs: &mut EspDefaultNvs,
+                   // fsm: &mut Fsm,
+    ) {
+        match &self.state {
+            State::Initial => {
+                info!("Entering State::Initial.");
+                let ssid = read_nvs_string(&mut self.nvs, "ssid").unwrap();
+                let password = read_nvs_string(&mut self.nvs, "password").unwrap();
+                if let (Some(ssid), Some(password)) = (ssid, password) {
+                    info!(
+                        "Credentials from NVS: ssid = {}, password = {}",
+                        ssid, password
+                    );
+                    // provisioned: generate event to change state
+                    let event = Event::Credentials {
+                        ssid,
+                        user: String::from("marco"),
+                        password,
+                    };
+                    self.tx.send(event).unwrap();
+                } else {
+                    info!("Credentials not found in NVS. Activating wifi AP.");
+                    wifi_ap_start(&mut self.wifi, &self.sysloop).expect("Error activating AP");
+                    info!("Wifi AP started.");
+                    // TODO: iniciar servidor HTTP.
+                    info!("Se inicia servidor http");
+                    self.httpserver = Some(self.start_http_server());
+
+                    // TODO: Provisionamiento temporal para depurar.
+                    // let ssid = "harpoland";
+                    // let password = "alcachofatoxica";
+                    // self.nvs.set_raw("ssid", ssid.as_bytes()).unwrap();
+                    // self.nvs.set_raw("password", password.as_bytes()).unwrap();
+                }
+            }
+            State::Provisioned {
+                ssid,
+                user,
+                password,
+            } => {
+                info!("Entering State::Provisioned.");
+                info!("Trying to connect to wifi station.");
+                info!("Using credentials {ssid}, {user}, {password}.");
+                // TODO: conectar al wifi.
+                thread::sleep(Duration::from_millis(10000));
+                info!("Sending Event::WifiConnected from State::Provisioned.");
+                self.tx.send(Event::WifiConnected).unwrap();
+            }
+            State::WifiConnected => {
+                info!("State WifiConnected. Trying to connect to server.");
+            }
+            State::ServerConnected => {
+                info!("State ServerConnected. Start sending periodic data.");
+            }
+            State::Failure => {
+                error!("Current state is Failure");
+            }
+        }
+    }
+
+    fn start_http_server(&self) -> EspHttpServer {
+        let mut server = EspHttpServer::new(&Configuration::default()).unwrap();
+        
+        let tx1 = self.tx.clone();
+        
+        server.fn_handler("/", Method::Get, move |request| {
+            info!("http server: recibido request /");
+            let html = index_html();
+            let mut response = request.into_ok_response()?;
+            response.write_all(html.as_bytes())?;
+
+            let event = Event::Credentials {
+                ssid: String::from("harpoland"),
+                user: String::from("marco"),
+                password: String::from("alcachofatoxica"),
+            };
+            tx1.send(event).unwrap();
+            
+            Ok(())
+        }).unwrap();
+        
+        server
     }
 }
+
+
+fn templated(content: impl AsRef<str>) -> String {
+    format!(
+        r#"
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>esp-rs web server</title>
+    </head>
+    <body>
+        {}
+    </body>
+</html>
+"#,
+        content.as_ref()
+    )
+}
+
+fn index_html() -> String {
+    templated("Hello from ESP32-C3!")
+}
+
+
+
+
+
+
+
+
 
 // fn test_nvs() -> anyhow::Result<()> {
 //     info!("Leyendo credenciales desde NVS");
@@ -283,17 +368,19 @@ fn main() -> anyhow::Result<()> {
     // Crea tarea para procesar eventos en la máquina de estados
     // La tarea se implenta en esp-idf-sys con Thread de FreeRTOS.
     // let tx1 = tx.clone();
-    let mut fsm = Fsm::new(tx.clone(), sysloop, wifi, nvs);
+    // let mut fsm = Fsm::new(tx.clone(), sysloop, wifi, nvs);
     // let mywifi = Arc::new(Mutex::new(wifi));
     thread::Builder::new()
         .name("threadfsm".to_string())
         .stack_size(8000)
         .spawn(move || {
             info!("Thread for FSM event processing started.");
+            let mut fsm = Fsm::new(tx, sysloop, wifi, nvs);
             loop {
                 let event = rx.recv().unwrap();
                 info!("Event received: {:?}", event);
-                fsm.process_event(event);
+                fsm = fsm.process_event(event);
+                // fsm = fsm.process_event(event);
                 // info!("New state generated: {:?}", fsm.state);
             }
         })?;
@@ -339,14 +426,15 @@ fn wifi(
         None
     };
 
-    wifi.set_configuration(&Configuration::Mixed(
-        ClientConfiguration {
+    wifi.set_configuration(&embedded_svc::wifi::Configuration::Mixed(
+        //wifi.set_configuration(&Configuration::Mixed(
+        embedded_svc::wifi::ClientConfiguration {
             ssid: SSID.into(),
             password: PASS.into(),
             channel,
             ..Default::default()
         },
-        AccessPointConfiguration {
+        embedded_svc::wifi::AccessPointConfiguration {
             ssid: "aptest".into(),
             channel: channel.unwrap_or(1),
             ..Default::default()
@@ -387,12 +475,14 @@ fn wifi(
     Ok(wifi)
 }
 
-fn wifi_ap_start(wifi: &mut Box<EspWifi>, sysloop: EspSystemEventLoop) -> anyhow::Result<()> {
-    wifi.set_configuration(&Configuration::AccessPoint(AccessPointConfiguration {
-        ssid: "aptest".into(),
-        channel: 1,
-        ..Default::default()
-    }))
+fn wifi_ap_start(wifi: &mut Box<EspWifi>, sysloop: &EspSystemEventLoop) -> anyhow::Result<()> {
+    wifi.set_configuration(&embedded_svc::wifi::Configuration::AccessPoint(
+        embedded_svc::wifi::AccessPointConfiguration {
+            ssid: "aptest".into(),
+            channel: 1,
+            ..Default::default()
+        },
+    ))
     .expect("Error configurando wifi");
 
     wifi.start().expect("No se puede empezar el wifi");
