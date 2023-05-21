@@ -1,11 +1,14 @@
 // use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
 
+pub mod http;
+
 //use esp_idf_sys::{xQueueGenericCreate, xQueueGenericSend, xQueueReceive, QueueHandle_t};
 use std::str;
 use std::sync::mpsc;
 // https://doc.rust-lang.org/std/sync/mpsc/
 use std::thread;
 use std::time::Duration;
+use std::net::Ipv4Addr;
 // use std::mem::swap;
 
 // use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition};
@@ -14,10 +17,10 @@ use std::time::Duration;
 
 use esp_idf_svc::{
     // eventloop::EspSystemEventLoop,
-    http::server::{Configuration, EspHttpServer},
-    nvs::{EspDefaultNvs, EspDefaultNvsPartition}, errors::EspIOError,
+    http::server::EspHttpServer,
+    nvs::{EspDefaultNvs, EspDefaultNvsPartition},
+    // errors::EspIOError,
 };
-use embedded_svc::{http::Method, io::Write};
 
 use embedded_svc::wifi::*;
 use esp_idf_hal::peripheral;
@@ -26,27 +29,24 @@ use esp_idf_svc::eventloop::*;
 use esp_idf_svc::wifi::*;
 
 use anyhow::bail;
-use esp_idf_sys::CONFIG_NEWLIB_STDOUT_LINE_ENDING_CRLF;
+// use esp_idf_sys::CONFIG_NEWLIB_STDOUT_LINE_ENDING_CRLF;
 use log::*;
 
 // const SSID: Option<&'static str> = option_env!("WIFI_SSID");
 // const PASS: Option<&'static str> = option_env!("WIFI_PASS");
-const SSID: &str = "harpoland";
-const PASS: &str = "password";
 
 use esp_idf_svc::netif::*;
 // use esp_idf_svc::ping;
 // use embedded_svc::ping::Ping;
 
-use std::sync::{Arc, Mutex};
+// use std::sync::{Arc, Mutex};
 
 use embedded_svc::storage::RawStorage;
 
 /// Estados de la máquina de estados finitos
 #[derive(Debug, PartialEq)]
 enum State {
-    // Initial { httpserver: Option<EspHttpServer> },
-    Initial, // { httpserver: Box<EspHttpServer> },
+    Initial,
     Provisioned {
         ssid: String,
         user: String,
@@ -59,7 +59,7 @@ enum State {
 
 /// Eventos que se pueden pasar entre threads a la máquina de estados.
 #[derive(Debug, Clone)]
-enum Event {
+pub enum Event {
     Credentials {
         ssid: String,
         user: String,
@@ -155,33 +155,13 @@ impl<'a> Fsm<'a> {
         // Old state is being discarded here (consumed).
         // In the process, the fsm must be consumed too (self.state is mutable ref)
         self.state = self.state.next(event);
-
-        // swap(self.state.next(event), self.state);
         self.run();
         self
     }
 
-    // fn process_event(&mut self, event: Event) {
-    //     // Old state is being discarded here (consumed).
-    //     self.state = self.state.next(event);
-    //     // std::mem::replace(&mut self.state, self.state.next(event));
-    //     // std::mem::swap(self.state.next(event), self.state);
-    //     self.state.run(
-    //         &self.tx,
-    //         &mut self.wifi,
-    //         self.sysloop.clone(),
-    //         &mut self.nvs,
-    //     );
-    // }
-
     /// Ejecuta las acciones necesarias al entrar en cada estado
-    fn run(
-        &mut self, // tx: &mpsc::Sender<Event>,
-                   // wifi: &mut Box<EspWifi>,
-                   // sysloop: EspSystemEventLoop,
-                   // nvs: &mut EspDefaultNvs,
-                   // fsm: &mut Fsm,
-    ) {
+    fn run(&mut self) {
+        info!("******** Running state {:?}", self.state);
         match &self.state {
             State::Initial => {
                 info!("Entering State::Initial.");
@@ -200,12 +180,11 @@ impl<'a> Fsm<'a> {
                     };
                     self.tx.send(event).unwrap();
                 } else {
-                    info!("Credentials not found in NVS. Activating wifi AP.");
+                    info!("Credentials not found in NVS.");
+                    info!("Activating wifi AP.");
                     wifi_ap_start(&mut self.wifi, &self.sysloop).expect("Error activating AP");
-                    info!("Wifi AP started.");
-                    // TODO: iniciar servidor HTTP.
-                    info!("Se inicia servidor http");
-                    self.httpserver = Some(self.start_http_server());
+                    info!("Activating HTTP server");
+                    self.httpserver = Some(crate::http::start_http_server(&self.tx));
 
                     // TODO: Provisionamiento temporal para depurar.
                     // let ssid = "harpoland";
@@ -222,8 +201,15 @@ impl<'a> Fsm<'a> {
                 info!("Entering State::Provisioned.");
                 info!("Trying to connect to wifi station.");
                 info!("Using credentials {ssid}, {user}, {password}.");
-                // TODO: conectar al wifi.
-                thread::sleep(Duration::from_millis(10000));
+                if self.httpserver.is_some() {
+                    info!("Deactivating HTTP server");
+                    self.httpserver = None
+                }
+                // almacenamiento de credenciales en NVS
+                self.nvs.set_raw("ssid", ssid.as_bytes()).unwrap();
+                self.nvs.set_raw("password", password.as_bytes()).unwrap();
+                // thread::sleep(Duration::from_millis(10000));
+                wifi_sta_start(&mut self.wifi, &self.sysloop).expect("Error activating STA");
                 info!("Sending Event::WifiConnected from State::Provisioned.");
                 self.tx.send(Event::WifiConnected).unwrap();
             }
@@ -238,89 +224,7 @@ impl<'a> Fsm<'a> {
             }
         }
     }
-
-    fn start_http_server(&self) -> EspHttpServer {
-        let mut server = EspHttpServer::new(&Configuration::default()).unwrap();
-        
-        let tx1 = self.tx.clone();
-        
-        server.fn_handler("/", Method::Get, move |request| {
-            info!("http server: recibido request /");
-            let html = index_html();
-            let mut response = request.into_ok_response()?;
-            response.write_all(html.as_bytes())?;
-
-            let event = Event::Credentials {
-                ssid: String::from("harpoland"),
-                user: String::from("marco"),
-                password: String::from("alcachofatoxica"),
-            };
-            tx1.send(event).unwrap();
-            
-            Ok(())
-        }).unwrap();
-        
-        server
-    }
 }
-
-
-fn templated(content: impl AsRef<str>) -> String {
-    format!(
-        r#"
-<!DOCTYPE html>
-<html>
-    <head>
-        <meta charset="utf-8">
-        <title>esp-rs web server</title>
-    </head>
-    <body>
-        {}
-    </body>
-</html>
-"#,
-        content.as_ref()
-    )
-}
-
-fn index_html() -> String {
-    templated("Hello from ESP32-C3!")
-}
-
-
-
-
-
-
-
-
-
-// fn test_nvs() -> anyhow::Result<()> {
-//     info!("Leyendo credenciales desde NVS");
-//     let part = EspDefaultNvsPartition::take()?;
-//     let mut nvs = EspDefaultNvs::new(part, "storage", true).unwrap();
-//
-//     let value = "harpoland";
-//     nvs.set_raw("ssid", value.as_bytes())?;
-//
-//     let exists = nvs.contains("ssid")?;
-//     println!("Storage contains ssid: {}", exists);
-//
-//     if exists {
-//         let len = nvs.len("ssid").unwrap().unwrap();
-//         println!("ssid len: {}", len);
-//
-//         let mut buf: [u8; 100] = [0; 100];
-//         nvs.get_raw("ssid", &mut buf)?;
-//         println!("ssid buffer: {:?}", buf);
-//         let ssid = str::from_utf8(&buf[0..len])?;
-//         println!("ssid: {}", ssid);
-//     } else {
-//         println!("No existe clave ssid en el NVS");
-//     }
-//     nvs.remove("ssid")?;
-//     Ok(())
-// }
 
 fn read_nvs_string(nvs: &mut EspDefaultNvs, key: &str) -> Result<Option<String>, anyhow::Error> {
     if nvs.contains(&key).unwrap() {
@@ -396,67 +300,33 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn wifi(
-    modem: impl peripheral::Peripheral<P = esp_idf_hal::modem::Modem> + 'static,
-    sysloop: EspSystemEventLoop,
-) -> anyhow::Result<Box<EspWifi<'static>>> {
-    use std::net::Ipv4Addr;
-
-    // use esp_idf_svc::handle::RawHandle;
-
-    let mut wifi = Box::new(EspWifi::new(modem, sysloop.clone(), None)?);
-
-    info!("Wifi created, about to scan");
-
-    let ap_infos = wifi.scan()?;
-
-    let ours = ap_infos.into_iter().find(|a| a.ssid == SSID);
-
-    let channel = if let Some(ours) = ours {
-        info!(
-            "Found configured access point {} on channel {}",
-            SSID, ours.channel
-        );
-        Some(ours.channel)
-    } else {
-        info!(
-            "Configured access point {} not found during scanning, will go with unknown channel",
-            SSID
-        );
-        None
-    };
-
-    wifi.set_configuration(&embedded_svc::wifi::Configuration::Mixed(
-        //wifi.set_configuration(&Configuration::Mixed(
+fn wifi_sta_start(wifi: &mut Box<EspWifi>, sysloop: &EspSystemEventLoop) -> anyhow::Result<()> {
+    // wifi.stop()?;
+    wifi.set_configuration(&embedded_svc::wifi::Configuration::Client(
         embedded_svc::wifi::ClientConfiguration {
-            ssid: SSID.into(),
-            password: PASS.into(),
-            channel,
+            ssid: "harpoland".into(),
+            password: "alcachofatoxica".into(),
+            // channel: Some(1), //channel,
             ..Default::default()
         },
-        embedded_svc::wifi::AccessPointConfiguration {
-            ssid: "aptest".into(),
-            channel: channel.unwrap_or(1),
-            ..Default::default()
-        },
-    ))?;
+    ))
+        .expect("Error configurando wifi sta");
 
     wifi.start()?;
 
     info!("Starting wifi...");
 
-    if !WifiWait::new(&sysloop)?
+    if !WifiWait::new(sysloop)?
         .wait_with_timeout(Duration::from_secs(20), || wifi.is_started().unwrap())
     {
         bail!("Wifi did not start");
     }
 
     info!("Connecting wifi...");
-    println!("Connecting wifi... ***");
 
     wifi.connect()?;
 
-    if !EspNetifWait::new::<EspNetif>(wifi.sta_netif(), &sysloop)?.wait_with_timeout(
+    if !EspNetifWait::new::<EspNetif>(wifi.sta_netif(), sysloop)?.wait_with_timeout(
         Duration::from_secs(20),
         || {
             wifi.is_connected().unwrap()
@@ -469,10 +339,9 @@ fn wifi(
     let ip_info = wifi.sta_netif().get_ip_info()?;
 
     info!("Wifi DHCP info: {:?}", ip_info);
-
-    // ping(ip_info.subnet.gateway)?;
-
-    Ok(wifi)
+   
+    println!("Wifi sta activado {}", wifi.is_connected().unwrap());
+    Ok(())
 }
 
 fn wifi_ap_start(wifi: &mut Box<EspWifi>, sysloop: &EspSystemEventLoop) -> anyhow::Result<()> {
@@ -483,7 +352,7 @@ fn wifi_ap_start(wifi: &mut Box<EspWifi>, sysloop: &EspSystemEventLoop) -> anyho
             ..Default::default()
         },
     ))
-    .expect("Error configurando wifi");
+    .expect("Error configurando wifi ap");
 
     wifi.start().expect("No se puede empezar el wifi");
 
