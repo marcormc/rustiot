@@ -3,45 +3,39 @@
 pub mod http;
 
 //use esp_idf_sys::{xQueueGenericCreate, xQueueGenericSend, xQueueReceive, QueueHandle_t};
-use std::str;
-use std::sync::mpsc;
-// https://doc.rust-lang.org/std/sync/mpsc/
-use std::thread;
-use std::time::Duration;
-use std::net::Ipv4Addr;
 // use std::mem::swap;
-
 // use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition};
 // use esp_idf_sys;
 // use esp_idf_sys::{esp, EspError};
-
-use esp_idf_svc::{
-    // eventloop::EspSystemEventLoop,
-    http::server::EspHttpServer,
-    nvs::{EspDefaultNvs, EspDefaultNvsPartition},
-    // errors::EspIOError,
-};
-
-use embedded_svc::wifi::*;
-use esp_idf_hal::peripheral;
-use esp_idf_hal::prelude::*;
-use esp_idf_svc::eventloop::*;
-use esp_idf_svc::wifi::*;
-
-use anyhow::bail;
+// use esp_idf_hal::peripheral;
 // use esp_idf_sys::CONFIG_NEWLIB_STDOUT_LINE_ENDING_CRLF;
-use log::*;
+// use esp_idf_svc::ping;
+// use embedded_svc::ping::Ping;
+// use embedded_svc::wifi;
+// use std::sync::{Arc, Mutex};
+// Ver https://doc.rust-lang.org/std/sync/mpsc/
 
 // const SSID: Option<&'static str> = option_env!("WIFI_SSID");
 // const PASS: Option<&'static str> = option_env!("WIFI_PASS");
 
-use esp_idf_svc::netif::*;
-// use esp_idf_svc::ping;
-// use embedded_svc::ping::Ping;
-
-// use std::sync::{Arc, Mutex};
-
+use anyhow::bail;
 use embedded_svc::storage::RawStorage;
+use embedded_svc::wifi::*;
+use esp_idf_hal::prelude::Peripherals;
+use esp_idf_svc::{
+    eventloop::EspSystemEventLoop,
+    http::server::EspHttpServer,
+    netif::{EspNetif, EspNetifWait},
+    nvs::{EspDefaultNvs, EspDefaultNvsPartition},
+    wifi::{EspWifi, WifiWait},
+    // errors::EspIOError,
+};
+use log::{error, info, warn};
+use std::net::Ipv4Addr;
+use std::str;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 /// Estados de la máquina de estados finitos
 #[derive(Debug, PartialEq)]
@@ -53,7 +47,7 @@ enum State {
         password: String,
     },
     WifiConnected,
-    ServerConnected,
+    // ServerConnected,
     Failure,
 }
 
@@ -216,9 +210,9 @@ impl<'a> Fsm<'a> {
             State::WifiConnected => {
                 info!("State WifiConnected. Trying to connect to server.");
             }
-            State::ServerConnected => {
-                info!("State ServerConnected. Start sending periodic data.");
-            }
+            // State::ServerConnected => {
+            //     info!("State ServerConnected. Start sending periodic data.");
+            // }
             State::Failure => {
                 error!("Current state is Failure");
             }
@@ -310,7 +304,7 @@ fn wifi_sta_start(wifi: &mut Box<EspWifi>, sysloop: &EspSystemEventLoop) -> anyh
             ..Default::default()
         },
     ))
-        .expect("Error configurando wifi sta");
+    .expect("Error configurando wifi sta");
 
     wifi.start()?;
 
@@ -339,7 +333,7 @@ fn wifi_sta_start(wifi: &mut Box<EspWifi>, sysloop: &EspSystemEventLoop) -> anyh
     let ip_info = wifi.sta_netif().get_ip_info()?;
 
     info!("Wifi DHCP info: {:?}", ip_info);
-   
+
     println!("Wifi sta activado {}", wifi.is_connected().unwrap());
     Ok(())
 }
