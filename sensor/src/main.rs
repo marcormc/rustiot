@@ -1,6 +1,7 @@
 // use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
 
 pub mod http;
+pub mod wifi;
 
 //use esp_idf_sys::{xQueueGenericCreate, xQueueGenericSend, xQueueReceive, QueueHandle_t};
 // use std::mem::swap;
@@ -18,24 +19,21 @@ pub mod http;
 // const SSID: Option<&'static str> = option_env!("WIFI_SSID");
 // const PASS: Option<&'static str> = option_env!("WIFI_PASS");
 
-use anyhow::bail;
 use embedded_svc::storage::RawStorage;
-use embedded_svc::wifi::*;
 use esp_idf_hal::prelude::Peripherals;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     http::server::EspHttpServer,
-    netif::{EspNetif, EspNetifWait},
     nvs::{EspDefaultNvs, EspDefaultNvsPartition},
-    wifi::{EspWifi, WifiWait},
+    wifi::EspWifi,
     // errors::EspIOError,
 };
 use log::{error, info, warn};
-use std::net::Ipv4Addr;
 use std::str;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+
+use crate::wifi::{wifi_ap_start, wifi_sta_start};
 
 /// Estados de la máquina de estados finitos
 #[derive(Debug, PartialEq)]
@@ -179,12 +177,6 @@ impl<'a> Fsm<'a> {
                     wifi_ap_start(&mut self.wifi, &self.sysloop).expect("Error activating AP");
                     info!("Activating HTTP server");
                     self.httpserver = Some(crate::http::start_http_server(&self.tx));
-
-                    // TODO: Provisionamiento temporal para depurar.
-                    // let ssid = "harpoland";
-                    // let password = "alcachofatoxica";
-                    // self.nvs.set_raw("ssid", ssid.as_bytes()).unwrap();
-                    // self.nvs.set_raw("password", password.as_bytes()).unwrap();
                 }
             }
             State::Provisioned {
@@ -294,74 +286,3 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn wifi_sta_start(wifi: &mut Box<EspWifi>, sysloop: &EspSystemEventLoop) -> anyhow::Result<()> {
-    // wifi.stop()?;
-    wifi.set_configuration(&embedded_svc::wifi::Configuration::Client(
-        embedded_svc::wifi::ClientConfiguration {
-            ssid: "harpoland".into(),
-            password: "alcachofatoxica".into(),
-            // channel: Some(1), //channel,
-            ..Default::default()
-        },
-    ))
-    .expect("Error configurando wifi sta");
-
-    wifi.start()?;
-
-    info!("Starting wifi...");
-
-    if !WifiWait::new(sysloop)?
-        .wait_with_timeout(Duration::from_secs(20), || wifi.is_started().unwrap())
-    {
-        bail!("Wifi did not start");
-    }
-
-    info!("Connecting wifi...");
-
-    wifi.connect()?;
-
-    if !EspNetifWait::new::<EspNetif>(wifi.sta_netif(), sysloop)?.wait_with_timeout(
-        Duration::from_secs(20),
-        || {
-            wifi.is_connected().unwrap()
-                && wifi.sta_netif().get_ip_info().unwrap().ip != Ipv4Addr::new(0, 0, 0, 0)
-        },
-    ) {
-        bail!("Wifi did not connect or did not receive a DHCP lease");
-    }
-
-    let ip_info = wifi.sta_netif().get_ip_info()?;
-
-    info!("Wifi DHCP info: {:?}", ip_info);
-
-    println!("Wifi sta activado {}", wifi.is_connected().unwrap());
-    Ok(())
-}
-
-fn wifi_ap_start(wifi: &mut Box<EspWifi>, sysloop: &EspSystemEventLoop) -> anyhow::Result<()> {
-    wifi.set_configuration(&embedded_svc::wifi::Configuration::AccessPoint(
-        embedded_svc::wifi::AccessPointConfiguration {
-            ssid: "aptest".into(),
-            channel: 1,
-            ..Default::default()
-        },
-    ))
-    .expect("Error configurando wifi ap");
-
-    wifi.start().expect("No se puede empezar el wifi");
-
-    info!("Starting wifi...");
-
-    // let sysloop = EspSystemEventLoop::take()?;
-    if !WifiWait::new(&sysloop)?
-        .wait_with_timeout(Duration::from_secs(20), || wifi.is_started().unwrap())
-    {
-        bail!("Wifi did not start");
-    }
-    Ok(())
-    // info!("Connecting wifi...");
-    // println!("Connecting wifi... ***");
-
-    // wifi.connect()?;
-    // Ok(())
-}
