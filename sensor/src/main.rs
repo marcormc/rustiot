@@ -1,6 +1,7 @@
 // use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
 
 pub mod http;
+pub mod mqtt;
 pub mod wifi;
 
 //use esp_idf_sys::{xQueueGenericCreate, xQueueGenericSend, xQueueReceive, QueueHandle_t};
@@ -24,15 +25,17 @@ use esp_idf_hal::prelude::Peripherals;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     http::server::EspHttpServer,
+    // errors::EspIOError,
+    mqtt::client::EspMqttClient,
     nvs::{EspDefaultNvs, EspDefaultNvsPartition},
     wifi::EspWifi,
-    // errors::EspIOError,
 };
 use log::{error, info, warn};
 use std::str;
 use std::sync::mpsc;
 use std::thread;
 
+use crate::mqtt::start_mqtt_client;
 use crate::wifi::{wifi_ap_start, wifi_sta_start};
 
 /// Estados de la máquina de estados finitos
@@ -122,6 +125,7 @@ struct Fsm<'a> {
     wifi: Box<EspWifi<'a>>,
     nvs: EspDefaultNvs,
     httpserver: Option<EspHttpServer>,
+    mqttc: Option<EspMqttClient>,
 }
 
 impl<'a> Fsm<'a> {
@@ -138,6 +142,7 @@ impl<'a> Fsm<'a> {
             wifi,
             nvs,
             httpserver: None,
+            mqttc: None,
         };
         fsm.run();
         fsm
@@ -200,6 +205,7 @@ impl<'a> Fsm<'a> {
             }
             State::WifiConnected => {
                 info!("State WifiConnected. Now connect to server (not implemented)");
+                self.mqttc = Some(start_mqtt_client(&self.tx).expect("Error connecting to mqtt"));
             }
             // State::ServerConnected => {
             //     info!("State ServerConnected. Start sending periodic data.");
@@ -212,11 +218,11 @@ impl<'a> Fsm<'a> {
 }
 
 fn read_nvs_string(nvs: &mut EspDefaultNvs, key: &str) -> Result<Option<String>, anyhow::Error> {
-    if nvs.contains(&key).unwrap() {
-        let len = nvs.len(&key).unwrap().unwrap();
+    if nvs.contains(key).unwrap() {
+        let len = nvs.len(key).unwrap().unwrap();
         // println!("ssid len: {}", len);
         let mut buf: [u8; 100] = [0; 100];
-        nvs.get_raw(&key, &mut buf)?;
+        nvs.get_raw(key, &mut buf)?;
         // println!("ssid buffer: {:?}", buf);
         let value = String::from(str::from_utf8(&buf[0..len])?);
         // println!("value: {}", value);
@@ -284,4 +290,3 @@ fn main() -> anyhow::Result<()> {
     // tr.join().unwrap();
     Ok(())
 }
-
