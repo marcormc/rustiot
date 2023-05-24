@@ -65,6 +65,9 @@ pub enum Event {
     MqttConnected,
     MqttDisconnected,
     SensorData(u32),
+    RemoteCommand {
+        command: String,
+    },
 }
 
 impl State {
@@ -105,7 +108,10 @@ impl State {
                 // self.clone()
                 State::Failure
             }
-
+            (State::WifiConnected, Event::RemoteCommand { command }) => {
+                info!("Remote command received {}", command);
+                State::WifiConnected
+            }
             (s, e) => {
                 // panic!("Wrong transition {:#?}, {:#?}", s, e);
                 error!("Wrong transition {:#?}, {:#?}", s, e);
@@ -205,7 +211,8 @@ impl<'a> Fsm<'a> {
             }
             State::WifiConnected => {
                 info!("State WifiConnected. Now connect to server (not implemented)");
-                self.mqttc = Some(start_mqtt_client(&self.tx).expect("Error connecting to mqtt"));
+                self.mqttc =
+                    Some(start_mqtt_client(self.tx.clone()).expect("Error connecting to mqtt"));
             }
             // State::ServerConnected => {
             //     info!("State ServerConnected. Start sending periodic data.");
