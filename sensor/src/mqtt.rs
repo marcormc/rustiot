@@ -3,7 +3,7 @@ use embedded_svc::mqtt::client::{Details::Complete, Event::Received, QoS};
 use std::thread;
 // use embedded_svc::mqtt::client::QoS;
 
-use crate::Event;
+use crate::fsm::Event;
 use esp_idf_svc::mqtt::client::{EspMqttClient, EspMqttMessage, MqttClientConfiguration};
 // use esp_idf_svc::mqtt::client::{EspMqttClient, MqttClientConfiguration};
 use esp_idf_sys::EspError;

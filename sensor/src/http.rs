@@ -6,7 +6,7 @@ use esp_idf_svc::{
     // errors::EspIOError,
 };
 use embedded_svc::{http::Method, io::Write};
-use crate::Event;
+use crate::fsm::Event;
 
 pub fn start_http_server(tx: &mpsc::Sender<Event>) -> EspHttpServer {
     let mut server = EspHttpServer::new(&Configuration::default()).unwrap();
