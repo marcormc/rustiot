@@ -18,10 +18,13 @@ pub fn start_http_server(tx: &mpsc::Sender<Event>) -> EspHttpServer {
             let mut response = request.into_ok_response()?;
             response.write_all(html.as_bytes())?;
 
+            // TODO: Leer formulario HTML con credenciales reales
             let event = Event::Credentials {
-                ssid: String::from("harpoland"),
-                user: String::from("marco"),
-                password: String::from("alcachofatoxica"),
+                wifi_ssid: "harpoland".into(),
+                wifi_psk: "alcachofatoxica".into(),
+                mqtt_host: "test.mosquitto.org".into(),
+                mqtt_user: None,
+                mqtt_passwd: None,
             };
             tx1.send(event).unwrap();
 

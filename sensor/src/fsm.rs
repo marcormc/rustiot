@@ -1,15 +1,7 @@
-
 use embedded_svc::storage::RawStorage;
-use esp_idf_svc::{
-    http::server::EspHttpServer,
-    mqtt::client::EspMqttClient,
-    nvs::EspDefaultNvs,
-};
+use esp_idf_svc::{http::server::EspHttpServer, mqtt::client::EspMqttClient, nvs::EspDefaultNvs};
 
-use esp_idf_svc::{
-    eventloop::EspSystemEventLoop,
-    wifi::EspWifi,
-};
+use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::EspWifi};
 
 use log::{error, info, warn};
 use std::str;
@@ -24,9 +16,11 @@ use crate::wifi::{wifi_ap_start, wifi_sta_start};
 pub enum State {
     Initial,
     Provisioned {
-        ssid: String,
-        user: String,
-        password: String,
+        wifi_ssid: String,
+        wifi_psk: String,
+        mqtt_host: String,
+        mqtt_user: Option<String>,
+        mqtt_passwd: Option<String>,
     },
     WifiConnected,
     // ServerConnected,
@@ -37,9 +31,11 @@ pub enum State {
 #[derive(Debug, Clone)]
 pub enum Event {
     Credentials {
-        ssid: String,
-        user: String,
-        password: String,
+        wifi_ssid: String,
+        wifi_psk: String,
+        mqtt_host: String,
+        mqtt_user: Option<String>,
+        mqtt_passwd: Option<String>,
     },
     WifiConnected,
     WifiDisconnected,
@@ -59,34 +55,30 @@ impl State {
             (
                 State::Initial,
                 Event::Credentials {
-                    ssid,
-                    user,
-                    password,
-                }
+                    wifi_ssid,
+                    wifi_psk,
+                    mqtt_host,
+                    mqtt_user,
+                    mqtt_passwd,
+                },
             ) => {
                 // println!("ssid={}, user={}, password={}", ssid, user, password);
                 info!("Recibido evento de provisionamiento");
                 Some(State::Provisioned {
-                    ssid,
-                    user,
-                    password,
+                    wifi_ssid,
+                    wifi_psk,
+                    mqtt_host,
+                    mqtt_user,
+                    mqtt_passwd,
                 })
             }
             (State::Initial, Event::SensorData(data)) => {
                 info!("Ignoring data (initial) {}", data);
                 Some(State::Initial)
             }
-            (
-                State::Provisioned {
-                    ssid: _,
-                    user: _,
-                    password: _,
-                },
-                Event::WifiConnected
-            ) => Some(State::WifiConnected),
+            (State::Provisioned { .. }, Event::WifiConnected) => Some(State::WifiConnected),
             (State::Provisioned { .. }, Event::SensorData(data)) => {
                 info!("Ignoring data (initial) {}", data);
-                // self.clone()
                 None
             }
             (State::WifiConnected, Event::RemoteCommand { command }) => {
@@ -94,10 +86,9 @@ impl State {
                 Some(State::WifiConnected)
             }
             (s, e) => {
-                // panic!("Wrong transition {:#?}, {:#?}", s, e);
-                error!("Wrong transition {:#?}, {:#?}", s, e);
-                //s.clone()
-                //State::Failure
+                error!("State {:#?}, event {:#?} not expected.", s, e);
+                // panic!("State {:#?}, event {:#?} not expected.", s, e);
+                // State::Failure
                 None
             }
         }
@@ -113,6 +104,9 @@ pub struct Fsm<'a> {
     pub nvs: EspDefaultNvs,
     pub httpserver: Option<EspHttpServer>,
     pub mqttc: Option<EspMqttClient>,
+    mqtt_host: Option<String>,
+    mqtt_user: Option<String>,
+    mqtt_passwd: Option<String>,
 }
 
 impl<'a> Fsm<'a> {
@@ -130,6 +124,9 @@ impl<'a> Fsm<'a> {
             nvs,
             httpserver: None,
             mqttc: None,
+            mqtt_host: None,
+            mqtt_user: None,
+            mqtt_passwd: None,
         };
         fsm.run();
         fsm
@@ -150,18 +147,25 @@ impl<'a> Fsm<'a> {
         info!("******** Running state {:?}", self.state);
         match &self.state {
             State::Initial => {
-                let ssid = read_nvs_string(&mut self.nvs, "ssid").unwrap();
-                let password = read_nvs_string(&mut self.nvs, "password").unwrap();
-                if let (Some(ssid), Some(password)) = (ssid, password) {
+                let wifi_ssid = read_nvs_string(&mut self.nvs, "wifi_ssid").unwrap();
+                let wifi_psk = read_nvs_string(&mut self.nvs, "wifi_psk").unwrap();
+                let mqtt_host = read_nvs_string(&mut self.nvs, "mqtt_host").unwrap();
+                let mqtt_user = read_nvs_string(&mut self.nvs, "mqtt_user").unwrap();
+                let mqtt_passwd = read_nvs_string(&mut self.nvs, "mqtt_passwd").unwrap();
+                if let (Some(wifi_ssid), Some(wifi_psk), Some(mqtt_host)) =
+                    (wifi_ssid, wifi_psk, mqtt_host)
+                {
                     info!(
-                        "Credentials from NVS: ssid = {}, password = {}",
-                        ssid, password
+                        "Credentials from NVS: ssid = {}, psk = {}, mqtt = {},{:?},{:?}",
+                        wifi_ssid, wifi_psk, mqtt_host, mqtt_user, mqtt_passwd
                     );
                     // provisioned: generate event to change state
                     let event = Event::Credentials {
-                        ssid,
-                        user: String::from("marco"),
-                        password,
+                        wifi_ssid,
+                        wifi_psk,
+                        mqtt_host,
+                        mqtt_user,
+                        mqtt_passwd,
                     };
                     self.tx.send(event).unwrap();
                 } else {
@@ -173,29 +177,49 @@ impl<'a> Fsm<'a> {
                 }
             }
             State::Provisioned {
-                ssid,
-                user: _,
-                password,
+                wifi_ssid,
+                wifi_psk,
+                mqtt_host,
+                mqtt_user,
+                mqtt_passwd,
             } => {
                 info!("Trying to connect to wifi station.");
-                info!("Using credentials {ssid}, {password}.");
+                info!("Using credentials {wifi_ssid}, {wifi_psk}.");
                 // stop http server if running
                 if self.httpserver.is_some() {
                     info!("Deactivating HTTP server");
                     self.httpserver = None
                 }
-                // store credentials in NVS
-                self.nvs.set_raw("ssid", ssid.as_bytes()).unwrap();
-                self.nvs.set_raw("password", password.as_bytes()).unwrap();
+                // store mqtt credentials in Fsm (wifi credentials not stored)
+                // self.mqtt_host = Some(mqtt_passwd.as_deref().clone());
+                self.mqtt_user = Some(mqtt_passwd.as_deref().unwrap().to_string());
+                self.mqtt_passwd = mqtt_passwd.clone();
+                // store credentials permanently in NVS
+                self.nvs.set_raw("wifi_ssid", wifi_ssid.as_bytes()).unwrap();
+                self.nvs.set_raw("wifi_psk", wifi_psk.as_bytes()).unwrap();
+                self.nvs.set_raw("mqtt_host", mqtt_host.as_bytes()).unwrap();
+                if let (Some(mqtt_user), Some(mqtt_passwd)) = (mqtt_user, mqtt_passwd) {
+                    self.nvs.set_raw("mqtt_user", mqtt_user.as_bytes()).unwrap();
+                    self.nvs.set_raw("mqtt_passwd", mqtt_passwd.as_bytes()).unwrap();
+                }
                 // connect to wifi using the credentials
                 // TODO: handle possible errors, retry on error, backoff
-                wifi_sta_start(&mut self.wifi, &self.sysloop).expect("Error activating STA");
+                wifi_sta_start(&mut self.wifi, &self.sysloop, wifi_ssid, wifi_psk)
+                    .expect("Error activating STA");
                 self.tx.send(Event::WifiConnected).unwrap();
             }
             State::WifiConnected => {
                 info!("State WifiConnected. Now connect to server (not implemented)");
-                self.mqttc =
-                    Some(start_mqtt_client(self.tx.clone()).expect("Error connecting to mqtt"));
+                // let host = self.mqtt_host.as_deref();
+                self.mqttc = Some(
+                    start_mqtt_client(
+                        self.tx.clone(),
+                        self.mqtt_host.as_deref().unwrap(),
+                        self.mqtt_user.as_deref(),
+                        self.mqtt_passwd.as_deref(),
+                    )
+                    .expect("Error connecting to mqtt"),
+                );
             }
             // State::ServerConnected => {
             //     info!("State ServerConnected. Start sending periodic data.");

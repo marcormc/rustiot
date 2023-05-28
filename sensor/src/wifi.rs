@@ -1,4 +1,3 @@
-
 use anyhow::bail;
 use embedded_svc::wifi::*;
 use esp_idf_svc::{
@@ -6,17 +5,23 @@ use esp_idf_svc::{
     netif::{EspNetif, EspNetifWait},
     wifi::{EspWifi, WifiWait},
 };
+use log::info;
 use std::net::Ipv4Addr;
 use std::time::Duration;
-use log::info;
 
 
-pub fn wifi_sta_start(wifi: &mut Box<EspWifi>, sysloop: &EspSystemEventLoop) -> anyhow::Result<()> {
+pub fn wifi_sta_start(
+    wifi: &mut Box<EspWifi>,
+    sysloop: &EspSystemEventLoop,
+    ssid: &str,
+    password: &str,
+) -> anyhow::Result<()> {
+
     // wifi.stop()?;
     wifi.set_configuration(&embedded_svc::wifi::Configuration::Client(
         embedded_svc::wifi::ClientConfiguration {
-            ssid: "harpoland".into(),
-            password: "alcachofatoxica".into(),
+            ssid: ssid.into(),
+            password: password.into(),
             // channel: Some(1), //channel,
             ..Default::default()
         },

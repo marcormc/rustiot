@@ -35,6 +35,7 @@ use std::thread;
 
 use crate::fsm::Fsm;
 
+
 fn main() -> anyhow::Result<()> {
     // It is necessary to call this function once. Otherwise some patches to the runtime
     // implemented by esp-idf-sys might not link properly.
