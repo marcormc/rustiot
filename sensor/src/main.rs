@@ -72,7 +72,7 @@ pub enum Event {
 
 impl State {
     /// Procesa los eventos según el estado actual.
-    fn next(self, event: Event) -> State {
+    fn next(&mut self, event: Event) -> Option<State> {
         println!("next, state {:?}, event {:?}", self, event);
         match (self, event) {
             (
@@ -81,19 +81,19 @@ impl State {
                     ssid,
                     user,
                     password,
-                },
+                }
             ) => {
                 // println!("ssid={}, user={}, password={}", ssid, user, password);
                 info!("Recibido evento de provisionamiento");
-                State::Provisioned {
+                Some(State::Provisioned {
                     ssid,
                     user,
                     password,
-                }
+                })
             }
             (State::Initial, Event::SensorData(data)) => {
                 info!("Ignoring data (initial) {}", data);
-                State::Initial
+                Some(State::Initial)
             }
             (
                 State::Provisioned {
@@ -101,23 +101,23 @@ impl State {
                     user: _,
                     password: _,
                 },
-                Event::WifiConnected,
-            ) => State::WifiConnected,
+                Event::WifiConnected
+            ) => Some(State::WifiConnected),
             (State::Provisioned { .. }, Event::SensorData(data)) => {
                 info!("Ignoring data (initial) {}", data);
                 // self.clone()
-                State::Failure
+                None
             }
             (State::WifiConnected, Event::RemoteCommand { command }) => {
                 info!("Remote command received {}", command);
-                State::WifiConnected
+                Some(State::WifiConnected)
             }
             (s, e) => {
                 // panic!("Wrong transition {:#?}, {:#?}", s, e);
                 error!("Wrong transition {:#?}, {:#?}", s, e);
                 //s.clone()
                 //State::Failure
-                s
+                None
             }
         }
     }
@@ -157,8 +157,10 @@ impl<'a> Fsm<'a> {
     fn process_event(mut self, event: Event) -> Fsm<'a> {
         // Old state is being discarded here (consumed).
         // In the process, the fsm must be consumed too (self.state is mutable ref)
-        self.state = self.state.next(event);
-        self.run();
+        if let Some(newstate) = self.state.next(event) {
+            self.state = newstate;
+            self.run();
+        }
         self
     }
 
