@@ -1,6 +1,7 @@
 // use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
 
 pub mod fsm;
+pub mod shtc3;
 pub mod http;
 pub mod mqtt;
 pub mod wifi;
@@ -34,7 +35,13 @@ use std::sync::mpsc;
 use std::thread;
 
 use crate::fsm::Fsm;
+use crate::shtc3::ShtcSensor;
 
+// use esp_idf_hal::i2c::{I2cConfig, I2cDriver};
+use esp_idf_hal::{
+    i2c::{I2cConfig, I2cDriver},
+    prelude::*,
+};
 
 fn main() -> anyhow::Result<()> {
     // It is necessary to call this function once. Otherwise some patches to the runtime
@@ -48,7 +55,15 @@ fn main() -> anyhow::Result<()> {
     let part = EspDefaultNvsPartition::take()?;
     let nvs = EspDefaultNvs::new(part, "storage", true).unwrap();
 
+    // configure i2c bus
     let peripherals = Peripherals::take().unwrap();
+    let pins = peripherals.pins;
+    let sda = pins.gpio10;
+    let scl = pins.gpio8;
+    let i2c = peripherals.i2c0;
+    let config = I2cConfig::new().baudrate(100.kHz().into());
+    let i2c = I2cDriver::new(i2c, sda, scl, &config)?;
+    let temp_sens = ShtcSensor::new(i2c);
 
     info!("Inicializando wifi");
     let sysloop = EspSystemEventLoop::take()?;
@@ -64,7 +79,7 @@ fn main() -> anyhow::Result<()> {
         .stack_size(8000)
         .spawn(move || {
             info!("Thread for FSM event processing started.");
-            let mut fsm = Fsm::new(tx, sysloop, wifi, nvs);
+            let mut fsm = Fsm::new(tx, sysloop, wifi, nvs, temp_sens);
             loop {
                 let event = rx.recv().unwrap();
                 info!("Event received: {:?}", event);

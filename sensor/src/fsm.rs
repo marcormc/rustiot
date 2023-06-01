@@ -1,7 +1,7 @@
 use embedded_svc::storage::RawStorage;
 use esp_idf_svc::{http::server::EspHttpServer, mqtt::client::EspMqttClient, nvs::EspDefaultNvs};
-
 use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::EspWifi};
+use esp_idf_hal::prelude::Peripherals;
 
 use log::{error, info, warn};
 use std::str;
@@ -9,6 +9,7 @@ use std::sync::mpsc;
 
 use crate::mqtt::start_mqtt_client;
 use crate::wifi::{wifi_ap_start, wifi_sta_start};
+use crate::shtc3::ShtcSensor;
 
 ///
 /// Estados de la máquina de estados finitos
@@ -104,6 +105,7 @@ pub struct Fsm<'a> {
     pub nvs: EspDefaultNvs,
     pub httpserver: Option<EspHttpServer>,
     pub mqttc: Option<EspMqttClient>,
+    temp_sens: ShtcSensor,
     mqtt_host: Option<String>,
     mqtt_user: Option<String>,
     mqtt_passwd: Option<String>,
@@ -115,6 +117,7 @@ impl<'a> Fsm<'a> {
         sysloop: EspSystemEventLoop,
         wifi: Box<EspWifi<'a>>,
         nvs: EspDefaultNvs,
+        temp_sens: ShtcSensor,
     ) -> Self {
         let mut fsm = Self {
             state: State::Initial,
@@ -122,6 +125,7 @@ impl<'a> Fsm<'a> {
             sysloop,
             wifi,
             nvs,
+            temp_sens,
             httpserver: None,
             mqttc: None,
             mqtt_host: None,
@@ -152,6 +156,7 @@ impl<'a> Fsm<'a> {
                 let mqtt_host = read_nvs_string(&mut self.nvs, "mqtt_host").unwrap();
                 let mqtt_user = read_nvs_string(&mut self.nvs, "mqtt_user").unwrap();
                 let mqtt_passwd = read_nvs_string(&mut self.nvs, "mqtt_passwd").unwrap();
+                self.temp_sens.start_measurements().expect("Error initializing sensor shtc3");
                 if let (Some(wifi_ssid), Some(wifi_psk), Some(mqtt_host)) =
                     (wifi_ssid, wifi_psk, mqtt_host)
                 {
