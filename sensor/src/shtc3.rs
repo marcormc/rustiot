@@ -16,7 +16,7 @@ use esp_idf_svc::timer::*;
 use std::time::*;
 
 pub struct ShtcSensor<'a> {
-    sensor: ShtCx<Sht2Gen, I2cDriver<'a>>
+    pub sensor: ShtCx<Sht2Gen, I2cDriver<'a>>
 }
 
 impl<'a> ShtcSensor<'a> {

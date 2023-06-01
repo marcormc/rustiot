@@ -1,7 +1,17 @@
 use embedded_svc::storage::RawStorage;
 use esp_idf_svc::{http::server::EspHttpServer, mqtt::client::EspMqttClient, nvs::EspDefaultNvs};
 use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::EspWifi};
-use esp_idf_hal::prelude::Peripherals;
+// use esp_idf_hal::prelude::Peripherals;
+
+use std::time::*;
+use esp_idf_hal::{
+    delay,
+    i2c::I2cDriver,
+};
+use shtcx::{self, shtc3, PowerMode, ShtCx};
+use esp_idf_svc::timer::*;
+use anyhow::Result;
+use shtcx::sensor_class::Sht2Gen;
 
 use log::{error, info, warn};
 use std::str;
@@ -42,7 +52,7 @@ pub enum Event {
     WifiDisconnected,
     MqttConnected,
     MqttDisconnected,
-    SensorData(u32),
+    SensorData(f32),
     RemoteCommand {
         command: String,
     },
@@ -74,17 +84,22 @@ impl State {
                 })
             }
             (State::Initial, Event::SensorData(data)) => {
-                info!("Ignoring data (initial) {}", data);
+                info!("Ignoring sensor data (initial) {}", data);
                 Some(State::Initial)
             }
             (State::Provisioned { .. }, Event::WifiConnected) => Some(State::WifiConnected),
             (State::Provisioned { .. }, Event::SensorData(data)) => {
-                info!("Ignoring data (initial) {}", data);
+                info!("Ignoring sensor data (Provisioned) {}", data);
                 None
             }
             (State::WifiConnected, Event::RemoteCommand { command }) => {
                 info!("Remote command received {}", command);
                 Some(State::WifiConnected)
+            }
+            (State::WifiConnected { .. }, Event::SensorData(data)) => {
+                info!("Sending sensor data (WifiConnected) {}", data);
+                // TODO: send sensor data using MQTT
+                None
             }
             (s, e) => {
                 error!("State {:#?}, event {:#?} not expected.", s, e);
@@ -105,7 +120,9 @@ pub struct Fsm<'a> {
     pub nvs: EspDefaultNvs,
     pub httpserver: Option<EspHttpServer>,
     pub mqttc: Option<EspMqttClient>,
-    temp_sens: ShtcSensor,
+    // temp_sens: ShtcSensor<'a>,
+    // i2c: I2cDriver<'a>,
+    // temp_sensor: ShtCx<Sht2Gen, I2cDriver<'a>>,
     mqtt_host: Option<String>,
     mqtt_user: Option<String>,
     mqtt_passwd: Option<String>,
@@ -117,7 +134,9 @@ impl<'a> Fsm<'a> {
         sysloop: EspSystemEventLoop,
         wifi: Box<EspWifi<'a>>,
         nvs: EspDefaultNvs,
-        temp_sens: ShtcSensor,
+        //temp_sens: ShtcSensor,
+        // i2c: I2cDriver<'a>,
+        // temp_sensor: ShtCx<Sht2Gen, I2cDriver>,
     ) -> Self {
         let mut fsm = Self {
             state: State::Initial,
@@ -125,7 +144,9 @@ impl<'a> Fsm<'a> {
             sysloop,
             wifi,
             nvs,
-            temp_sens,
+            //  temp_sensor,
+            // i2c,
+            // temp_sens,
             httpserver: None,
             mqttc: None,
             mqtt_host: None,
@@ -156,7 +177,8 @@ impl<'a> Fsm<'a> {
                 let mqtt_host = read_nvs_string(&mut self.nvs, "mqtt_host").unwrap();
                 let mqtt_user = read_nvs_string(&mut self.nvs, "mqtt_user").unwrap();
                 let mqtt_passwd = read_nvs_string(&mut self.nvs, "mqtt_passwd").unwrap();
-                self.temp_sens.start_measurements().expect("Error initializing sensor shtc3");
+                // self.temp_sens.start_measurements().expect("Error initializing sensor shtc3");
+                // self.start_sensor().expect("Error initializing sensor shtc3");
                 if let (Some(wifi_ssid), Some(wifi_psk), Some(mqtt_host)) =
                     (wifi_ssid, wifi_psk, mqtt_host)
                 {
@@ -197,7 +219,9 @@ impl<'a> Fsm<'a> {
                 }
                 // store mqtt credentials in Fsm (wifi credentials not stored)
                 // self.mqtt_host = Some(mqtt_passwd.as_deref().clone());
-                self.mqtt_user = Some(mqtt_passwd.as_deref().unwrap().to_string());
+                // self.mqtt_user = Some(mqtt_passwd.as_deref().unwrap().to_string());
+                self.mqtt_host = Some(mqtt_host.clone());
+                self.mqtt_user = mqtt_user.clone();
                 self.mqtt_passwd = mqtt_passwd.clone();
                 // store credentials permanently in NVS
                 self.nvs.set_raw("wifi_ssid", wifi_ssid.as_bytes()).unwrap();
@@ -234,6 +258,30 @@ impl<'a> Fsm<'a> {
             }
         }
     }
+
+    // pub fn start_sensor(&mut self) -> Result<()> {
+    //     info!("start sensor");
+
+    //     // let mut temp_sensor = shtc3(self.i2c);
+
+    //     let mut delay = delay::Ets;
+
+    //     info!("About to schedule a periodic timer every five seconds");
+    //     let periodic_timer = EspTimerService::new()?.timer(move || {
+    //         info!("Tick from periodic timer");
+
+    //         // let temp = self.temp_sens.sensor
+    //         let temp = self.temp_sensor
+    //             .measure_temperature(PowerMode::NormalMode, &mut delay)
+    //             .unwrap()
+    //             .as_degrees_celsius();
+    //         info!("Temperatura leída: {}", temp);
+    //     })?;
+
+    //     periodic_timer.every(Duration::from_secs(5))?;
+
+    //     Ok(())
+    // }
 }
 
 fn read_nvs_string(nvs: &mut EspDefaultNvs, key: &str) -> Result<Option<String>, anyhow::Error> {
