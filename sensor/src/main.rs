@@ -23,10 +23,13 @@ pub mod wifi;
 // const PASS: Option<&'static str> = option_env!("WIFI_PASS");
 
 // use embedded_svc::storage::RawStorage;
-//  use anyhow::Result;
+use std::sync::{Arc, Mutex};
+use anyhow::Result;
 use std::time::*;
 use esp_idf_svc::timer::*;
 use esp_idf_hal::prelude::Peripherals;
+use esp_idf_hal::gpio::Pins;
+use esp_idf_hal::i2c::I2C0;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     nvs::{EspDefaultNvs, EspDefaultNvsPartition},
@@ -67,42 +70,40 @@ fn main() -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel();
 
 
-    // ----------------- sensor ------------------ 
-    info!("start sensor");
+    // // ----------------- sensor ------------------ 
+    // info!("start sensor");
 
-    // configure i2c bus
-    let pins = peripherals.pins;
-    let sda = pins.gpio10;
-    let scl = pins.gpio8;
-    let i2c = peripherals.i2c0;
-    let config = I2cConfig::new().baudrate(100.kHz().into());
-    let i2c = I2cDriver::new(i2c, sda, scl, &config)?;
-    // let temp_sens = ShtcSensor::new(i2c);
+    // // configure i2c bus
+    // let pins = peripherals.pins;
+    // let sda = pins.gpio10;
+    // let scl = pins.gpio8;
+    // let i2c = peripherals.i2c0;
+    // let config = I2cConfig::new().baudrate(100.kHz().into());
+    // let i2c = I2cDriver::new(i2c, sda, scl, &config)?;
+    // // let temp_sens = ShtcSensor::new(i2c);
+    // // let mut temp_sensor = shtc3(i2c);
     // let mut temp_sensor = shtc3(i2c);
-    let mut temp_sensor = shtc3(i2c);
 
-    let mut delay = delay::Ets;
+    // let mut delay = delay::Ets;
 
-    info!("About to schedule a periodic timer every five seconds");
-    let txs = tx.clone();
-    let periodic_timer = EspTimerService::new()?.timer(move || {
-        info!("Tick from periodic timer");
+    // info!("About to schedule a periodic timer every five seconds");
+    // let txs = tx.clone();
+    // let periodic_timer = EspTimerService::new()?.timer(move || {
+    //     info!("Tick from periodic timer");
 
-        // let temp = self.temp_sens.sensor
-        let temp = temp_sensor
-            .measure_temperature(PowerMode::NormalMode, &mut delay)
-            .unwrap()
-            .as_degrees_celsius();
-        info!("Temperatura leída: {}", temp);
+    //     // let temp = self.temp_sens.sensor
+    //     let temp = temp_sensor
+    //         .measure_temperature(PowerMode::NormalMode, &mut delay)
+    //         .unwrap()
+    //         .as_degrees_celsius();
+    //     info!("Temperatura leída: {}", temp);
 
-        let event = Event::SensorData(temp);
-        txs.send(event).unwrap();
-    })?;
+    //     let event = Event::SensorData(temp);
+    //     txs.send(event).unwrap();
+    // })?;
 
-    periodic_timer.every(Duration::from_secs(5))?;
-    // ---------------- sensor end -------------------
-
-
+    // periodic_timer.every(Duration::from_secs(5))?;
+    // // ---------------- sensor end -------------------
 
 
 
@@ -112,7 +113,9 @@ fn main() -> anyhow::Result<()> {
     let wifi = Box::new(EspWifi::new(peripherals.modem, sysloop.clone(), None)?);
     info!("Inicialización del wifi terminada");
 
-    // start_sensor(peripherals);
+    // configure i2c bus
+    // let pins = peripherals.pins;
+    start_sensor(peripherals.pins, peripherals.i2c0, tx.clone())?;
 
     // let mywifi = Arc::new(Mutex::new(wifi));
     thread::Builder::new()
@@ -173,6 +176,7 @@ fn main() -> anyhow::Result<()> {
         })?;
 
 
+    // just to keep this thread alive because it has timers running
     loop {
         sleep(Duration::from_secs(10));
         info!("Inactive");
@@ -189,35 +193,41 @@ fn main() -> anyhow::Result<()> {
 }
 
 
-// fn start_sensor(peripherals: Peripherals) -> Result<()> {
-//     info!("start sensor");
-// 
-//     // configure i2c bus
-//     let pins = peripherals.pins;
-//     let sda = pins.gpio10;
-//     let scl = pins.gpio8;
-//     let i2c = peripherals.i2c0;
-//     let config = I2cConfig::new().baudrate(100.kHz().into());
-//     let i2c = I2cDriver::new(i2c, sda, scl, &config)?;
-//     // let temp_sens = ShtcSensor::new(i2c);
-//     // let mut temp_sensor = shtc3(i2c);
-//     let mut temp_sensor = shtc3(i2c);
-// 
-//     let mut delay = delay::Ets;
-// 
-//     info!("About to schedule a periodic timer every five seconds");
-//     let periodic_timer = EspTimerService::new()?.timer(move || {
-//         info!("Tick from periodic timer");
-// 
-//         // let temp = self.temp_sens.sensor
-//         let temp = temp_sensor
-//             .measure_temperature(PowerMode::NormalMode, &mut delay)
-//             .unwrap()
-//             .as_degrees_celsius();
-//         info!("Temperatura leída: {}", temp);
-//     })?;
-// 
-//     periodic_timer.every(Duration::from_secs(5))?;
-// 
-//     Ok(())
-// }
+fn start_sensor(pins: Pins, i2c: I2C0, tx: mpsc::Sender<Event>) -> Result<()> {
+    info!("start sensor");
+
+    // let temp_sens = ShtcSensor::new(i2c);
+    // let mut temp_sensor = shtc3(i2c);
+    // let temp_sensor = shtc3(*i2c);
+    // let sensor = Arc::new(Mutex::new(temp_sensor));
+
+    let sda = pins.gpio10;
+    let scl = pins.gpio8;
+    // let i2c = peripherals.i2c0;
+    let config = I2cConfig::new().baudrate(100.kHz().into());
+    let i2c = I2cDriver::new(i2c, sda, scl, &config)?;
+    let mut temp_sensor = shtc3(i2c);
+
+    // let txs = tx.clone();
+
+    let mut delay = delay::Ets;
+
+    info!("About to schedule a periodic timer every five seconds");
+    let periodic_timer = EspTimerService::new()?.timer(move || {
+        info!("Tick from periodic timer");
+        // let sen = sensor.clone();
+        // let temp = self.temp_sens.sensor
+        // let temp = sen.lock().unwrap()
+        let temp = temp_sensor
+            .measure_temperature(PowerMode::NormalMode, &mut delay)
+            .unwrap()
+            .as_degrees_celsius();
+        info!("Temperatura leída: {}", temp);
+        let event = Event::SensorData(temp);
+        tx.send(event).unwrap();
+    })?;
+
+    periodic_timer.every(Duration::from_secs(5))?;
+
+    Ok(())
+}
