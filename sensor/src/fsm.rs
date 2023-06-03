@@ -1,25 +1,12 @@
-use embedded_svc::storage::RawStorage;
-use esp_idf_svc::{http::server::EspHttpServer, mqtt::client::EspMqttClient, nvs::EspDefaultNvs};
-use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::EspWifi};
-// use esp_idf_hal::prelude::Peripherals;
-
-use std::time::*;
-use esp_idf_hal::{
-    delay,
-    i2c::I2cDriver,
-};
-use shtcx::{self, shtc3, PowerMode, ShtCx};
-use esp_idf_svc::timer::*;
+use crate::mqtt::{start_mqtt_client,send_temperature};
+use crate::wifi::{wifi_ap_start, wifi_sta_start};
 use anyhow::Result;
-use shtcx::sensor_class::Sht2Gen;
-
+use embedded_svc::storage::RawStorage;
+use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::EspWifi};
+use esp_idf_svc::{http::server::EspHttpServer, mqtt::client::EspMqttClient, nvs::EspDefaultNvs};
 use log::{error, info, warn};
 use std::str;
 use std::sync::mpsc;
-
-use crate::mqtt::start_mqtt_client;
-use crate::wifi::{wifi_ap_start, wifi_sta_start};
-use crate::shtc3::ShtcSensor;
 
 ///
 /// Estados de la máquina de estados finitos
@@ -34,7 +21,7 @@ pub enum State {
         mqtt_passwd: Option<String>,
     },
     WifiConnected,
-    // ServerConnected,
+    ServerConnected,
     Failure,
 }
 
@@ -92,12 +79,25 @@ impl State {
                 info!("Ignoring sensor data (Provisioned) {}", data);
                 None
             }
+            (State::WifiConnected, Event::MqttConnected) => {
+                Some(State::ServerConnected)
+            }
             (State::WifiConnected, Event::RemoteCommand { command }) => {
                 info!("Remote command received {}", command);
                 Some(State::WifiConnected)
             }
             (State::WifiConnected { .. }, Event::SensorData(data)) => {
-                info!("Sending sensor data (WifiConnected) {}", data);
+                info!("Sensor data can't be sent to server: {}", data);
+                None
+            }
+            (State::ServerConnected { .. }, Event::SensorData(data)) => {
+                info!("Sending sensor data to MQTT: {}", data);
+                // let mqttc = fsm.mqttc.as_mut().unwrap();
+                // let mqbox = Box::new(mqttc);
+                // send_data(mqttc, data.to_string().as_ref());
+                // if let Some(mqttc) = fsm.mqttc {
+                //     send_data(&mqttc, data.to_string().as_ref());
+                // }
                 // TODO: send sensor data using MQTT
                 None
             }
@@ -157,14 +157,15 @@ impl<'a> Fsm<'a> {
         fsm
     }
 
-    pub fn process_event(mut self, event: Event) -> Fsm<'a> {
+    // pub fn process_event(&mut self, event: Event) -> Fsm<'a> {
+    pub fn process_event(&mut self, event: Event) {
         // Old state is being discarded here (consumed).
         // In the process, the fsm must be consumed too (self.state is mutable ref)
         if let Some(newstate) = self.state.next(event) {
             self.state = newstate;
             self.run();
         }
-        self
+        // self
     }
 
     /// Ejecuta las acciones necesarias al entrar en cada estado
@@ -229,7 +230,9 @@ impl<'a> Fsm<'a> {
                 self.nvs.set_raw("mqtt_host", mqtt_host.as_bytes()).unwrap();
                 if let (Some(mqtt_user), Some(mqtt_passwd)) = (mqtt_user, mqtt_passwd) {
                     self.nvs.set_raw("mqtt_user", mqtt_user.as_bytes()).unwrap();
-                    self.nvs.set_raw("mqtt_passwd", mqtt_passwd.as_bytes()).unwrap();
+                    self.nvs
+                        .set_raw("mqtt_passwd", mqtt_passwd.as_bytes())
+                        .unwrap();
                 }
                 // connect to wifi using the credentials
                 // TODO: handle possible errors, retry on error, backoff
@@ -238,50 +241,32 @@ impl<'a> Fsm<'a> {
                 self.tx.send(Event::WifiConnected).unwrap();
             }
             State::WifiConnected => {
-                info!("State WifiConnected. Now connect to server (not implemented)");
+                info!("State WifiConnected.");
                 // let host = self.mqtt_host.as_deref();
-                self.mqttc = Some(
-                    start_mqtt_client(
+                let res = start_mqtt_client(
                         self.tx.clone(),
                         self.mqtt_host.as_deref().unwrap(),
                         self.mqtt_user.as_deref(),
                         self.mqtt_passwd.as_deref(),
-                    )
-                    .expect("Error connecting to mqtt"),
-                );
+                    );
+                match res {
+                        Ok(mqttc) =>  {
+                            self.mqttc = Some(mqttc);
+                            info!("Connected to MQTT server.");
+                        }
+                        Err(err) => { error!("Error connecting to MQTT server: {}", err); }
+                    }
+                    self.tx.send(Event::MqttConnected).unwrap();
             }
-            // State::ServerConnected => {
-            //     info!("State ServerConnected. Start sending periodic data.");
-            // }
+            State::ServerConnected => {
+                info!("State ServerConnected. Start sending periodic data.");
+            }
             State::Failure => {
                 error!("Current state is Failure");
             }
         }
     }
 
-    // pub fn start_sensor(&mut self) -> Result<()> {
-    //     info!("start sensor");
-
-    //     // let mut temp_sensor = shtc3(self.i2c);
-
-    //     let mut delay = delay::Ets;
-
-    //     info!("About to schedule a periodic timer every five seconds");
-    //     let periodic_timer = EspTimerService::new()?.timer(move || {
-    //         info!("Tick from periodic timer");
-
-    //         // let temp = self.temp_sens.sensor
-    //         let temp = self.temp_sensor
-    //             .measure_temperature(PowerMode::NormalMode, &mut delay)
-    //             .unwrap()
-    //             .as_degrees_celsius();
-    //         info!("Temperatura leída: {}", temp);
-    //     })?;
-
-    //     periodic_timer.every(Duration::from_secs(5))?;
-
-    //     Ok(())
-    // }
 }
 
 fn read_nvs_string(nvs: &mut EspDefaultNvs, key: &str) -> Result<Option<String>, anyhow::Error> {
