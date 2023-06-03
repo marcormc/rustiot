@@ -23,6 +23,7 @@ use log::info;
 use std::sync::mpsc;
 use std::thread::{self, sleep};
 use std::time::*;
+use esp_idf_svc::timer::*;
 
 fn main() -> anyhow::Result<()> {
     // It is necessary to call this function once. Otherwise some patches to the runtime
@@ -47,7 +48,7 @@ fn main() -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel();
     // configure i2c bus
     // let pins = peripherals.pins;
-    start_sensor(peripherals.pins, peripherals.i2c0, tx.clone())?;
+    let timer = start_sensor(peripherals.pins, peripherals.i2c0, tx.clone())?;
 
     // let mywifi = Arc::new(Mutex::new(wifi));
     thread::Builder::new()
@@ -56,14 +57,12 @@ fn main() -> anyhow::Result<()> {
         .spawn(move || {
             info!("Thread for FSM event processing started.");
             // Option: start sensors timer here.
+            // start_sensor(peripherals.pins, peripherals.i2c0, tx.clone()).unwrap();
             let mut fsm = Fsm::new(tx, sysloop, wifi, nvs);
             loop {
                 let event = rx.recv().unwrap();
                 info!("Event received: {:?}", event);
-                // fsm = fsm.process_event(event);
                 fsm.process_event(event);
-                // fsm = fsm.process_event(event);
-                // info!("New state generated: {:?}", fsm.state);
             }
         })?;
 

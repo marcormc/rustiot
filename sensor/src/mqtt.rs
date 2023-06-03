@@ -50,7 +50,7 @@ pub fn start_mqtt_client(
         // process messages received from server
         move |message_event| match message_event {
             Ok(Received(msg)) => process_message(msg, &mut tx),
-            _ => warn!("Received from MQTT: {:?}", message_event),
+            _ => warn!("mqtt debug: received from mqtt client: {:?}", message_event),
         },
     )?;
 

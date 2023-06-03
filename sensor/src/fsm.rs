@@ -1,4 +1,4 @@
-use crate::mqtt::{start_mqtt_client,send_temperature};
+use crate::mqtt::{send_temperature, start_mqtt_client};
 use crate::wifi::{wifi_ap_start, wifi_sta_start};
 use anyhow::Result;
 use embedded_svc::storage::RawStorage;
@@ -46,9 +46,9 @@ pub enum Event {
 }
 
 impl State {
-    /// Procesa los eventos según el estado actual.
+    /// Manage the changes from one state to another
     fn next(&mut self, event: Event) -> Option<State> {
-        println!("next, state {:?}, event {:?}", self, event);
+        // println!("next, state {:?}, event {:?}", self, event);
         match (self, event) {
             (
                 State::Initial,
@@ -70,48 +70,20 @@ impl State {
                     mqtt_passwd,
                 })
             }
-            (State::Initial, Event::SensorData(data)) => {
-                info!("Ignoring sensor data (initial) {}", data);
-                Some(State::Initial)
-            }
             (State::Provisioned { .. }, Event::WifiConnected) => Some(State::WifiConnected),
-            (State::Provisioned { .. }, Event::SensorData(data)) => {
-                info!("Ignoring sensor data (Provisioned) {}", data);
-                None
-            }
-            (State::WifiConnected, Event::MqttConnected) => {
-                Some(State::ServerConnected)
-            }
+            (State::WifiConnected, Event::MqttConnected) => Some(State::ServerConnected),
             (State::WifiConnected, Event::RemoteCommand { command }) => {
                 info!("Remote command received {}", command);
                 Some(State::WifiConnected)
             }
-            (State::WifiConnected { .. }, Event::SensorData(data)) => {
-                info!("Sensor data can't be sent to server: {}", data);
-                None
-            }
-            (State::ServerConnected { .. }, Event::SensorData(data)) => {
-                info!("Sending sensor data to MQTT: {}", data);
-                // let mqttc = fsm.mqttc.as_mut().unwrap();
-                // let mqbox = Box::new(mqttc);
-                // send_data(mqttc, data.to_string().as_ref());
-                // if let Some(mqttc) = fsm.mqttc {
-                //     send_data(&mqttc, data.to_string().as_ref());
-                // }
-                // TODO: send sensor data using MQTT
-                None
-            }
-            (s, e) => {
-                error!("State {:#?}, event {:#?} not expected.", s, e);
-                // panic!("State {:#?}, event {:#?} not expected.", s, e);
-                // State::Failure
+            (_s, _e) => {
+                // error!("State {:#?}, event {:#?} not expected.", s, e);
                 None
             }
         }
     }
 }
 
-// struct Fsm<'a> {
 pub struct Fsm<'a> {
     pub state: State,
     pub tx: mpsc::Sender<Event>,
@@ -153,24 +125,36 @@ impl<'a> Fsm<'a> {
             mqtt_user: None,
             mqtt_passwd: None,
         };
-        fsm.run();
+        fsm.enter_state();
         fsm
     }
 
     // pub fn process_event(&mut self, event: Event) -> Fsm<'a> {
     pub fn process_event(&mut self, event: Event) {
-        // Old state is being discarded here (consumed).
-        // In the process, the fsm must be consumed too (self.state is mutable ref)
+        // handle events that keep the machine in current state
+        self.handle_event(&event);
+        // handle events that make the machine's state to change
         if let Some(newstate) = self.state.next(event) {
             self.state = newstate;
-            self.run();
+            self.enter_state();
         }
-        // self
     }
 
-    /// Ejecuta las acciones necesarias al entrar en cada estado
-    fn run(&mut self) {
-        info!("******** Running state {:?}", self.state);
+    /// It handles the events that keep the machine in the same state
+    fn handle_event(&mut self, event: &Event) {
+        match (&self.state, event) {
+            (State::ServerConnected { .. }, Event::SensorData(data)) => {
+                info!("Sending temperature sensor data to MQTT: {} °C", data);
+                let mqttc = self.mqttc.as_mut().unwrap();
+                send_temperature(mqttc, *data);
+            }
+            (_s, _e) => {}
+        }
+    }
+
+    /// It runs the acctions needed when the machine enters a new state
+    fn enter_state(&mut self) {
+        info!("******** Entering state {:?}", self.state);
         match &self.state {
             State::Initial => {
                 let wifi_ssid = read_nvs_string(&mut self.nvs, "wifi_ssid").unwrap();
@@ -244,19 +228,21 @@ impl<'a> Fsm<'a> {
                 info!("State WifiConnected.");
                 // let host = self.mqtt_host.as_deref();
                 let res = start_mqtt_client(
-                        self.tx.clone(),
-                        self.mqtt_host.as_deref().unwrap(),
-                        self.mqtt_user.as_deref(),
-                        self.mqtt_passwd.as_deref(),
-                    );
+                    self.tx.clone(),
+                    self.mqtt_host.as_deref().unwrap(),
+                    self.mqtt_user.as_deref(),
+                    self.mqtt_passwd.as_deref(),
+                );
                 match res {
-                        Ok(mqttc) =>  {
-                            self.mqttc = Some(mqttc);
-                            info!("Connected to MQTT server.");
-                        }
-                        Err(err) => { error!("Error connecting to MQTT server: {}", err); }
+                    Ok(mqttc) => {
+                        self.mqttc = Some(mqttc);
+                        info!("Connected to MQTT server.");
                     }
-                    self.tx.send(Event::MqttConnected).unwrap();
+                    Err(err) => {
+                        error!("Error connecting to MQTT server: {}", err);
+                    }
+                }
+                self.tx.send(Event::MqttConnected).unwrap();
             }
             State::ServerConnected => {
                 info!("State ServerConnected. Start sending periodic data.");
@@ -266,7 +252,6 @@ impl<'a> Fsm<'a> {
             }
         }
     }
-
 }
 
 fn read_nvs_string(nvs: &mut EspDefaultNvs, key: &str) -> Result<Option<String>, anyhow::Error> {
