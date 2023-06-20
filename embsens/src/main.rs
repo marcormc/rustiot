@@ -6,13 +6,20 @@ use esp_backtrace as _;
 use esp_println::println;
 use hal::{
     clock::ClockControl,
-    peripherals::Peripherals,
+    peripherals::{Interrupt, Peripherals, I2C0},
     embassy,
-    prelude::*, timer::TimerGroup, Rtc};
+    i2c::I2C,
+    prelude::*,
+    timer::TimerGroup,
+    Priority,
+    IO,
+    Rtc};
 
 use embassy_executor::Executor;
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
+use icm42670::{prelude::*, Address, Icm42670};
+// use lis3dh_async::{Lis3dh, Range, SlaveAddr};
 
 #[embassy_executor::task]
 async fn run1() {
@@ -30,9 +37,32 @@ async fn run2() {
     }
 }
 
+#[embassy_executor::task]
+async fn runi2c(i2c: I2C<'static, I2C0>) {
+    let mut icm = Icm42670::new(i2c, Address::Primary).unwrap();
+
+    loop {
+        let accel_norm = icm.accel_norm().unwrap();
+        let gyro_norm = icm.gyro_norm().unwrap();
+        println!(
+            "ACCEL  =  X: {:+.04} Y: {:+.04} Z: {:+.04}\t\tGYRO  =  X: {:+.04} Y: {:+.04} Z: {:+.04}",
+            accel_norm.x, accel_norm.y, accel_norm.z, gyro_norm.x, gyro_norm.y, gyro_norm.z);
+        // delay.delay_ms(100u32);
+        Timer::after(Duration::from_millis(100)).await;
+    }
+
+    //let mut lis3dh = Lis3dh::new_i2c(i2c, SlaveAddr::Alternate).await.unwrap();
+    //lis3dh.set_range(Range::G8).await.unwrap();
+
+    //loop {
+    //    let norm = lis3dh.accel_norm().await.unwrap();
+    //    esp_println::println!("X: {:+.5}  Y: {:+.5}  Z: {:+.5}", norm.x, norm.y, norm.z);
+
+    //    Timer::after(Duration::from_millis(100)).await;
+    //}
+}
+
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
-
-
 
 #[entry]
 fn main() -> ! {
@@ -72,10 +102,32 @@ fn main() -> ! {
     // #[cfg(feature = "embassy-time-timg0")]
     // embassy::init(&clocks, timer_group0.timer0);
 
+    // inicializa i2c
+    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+
+    let i2c0 = I2C::new(
+        peripherals.I2C0,
+        io.pins.gpio10,
+        io.pins.gpio8,
+        400u32.kHz(),
+        &mut system.peripheral_clock_control,
+        &clocks,
+    );
+
+    // let mut icm = Icm42670::new(i2c0, Address::Primary).unwrap();
+    // let accel_norm = icm.accel_norm().unwrap();
+    // let gyro_norm = icm.gyro_norm().unwrap();
+    // println!(
+    //     "ACCEL  =  X: {:+.04} Y: {:+.04} Z: {:+.04}\t\tGYRO  =  X: {:+.04} Y: {:+.04} Z: {:+.04}",
+    //     accel_norm.x, accel_norm.y, accel_norm.z, gyro_norm.x, gyro_norm.y, gyro_norm.z);
+
+    hal::interrupt::enable(Interrupt::I2C_EXT0, Priority::Priority1).unwrap();
+
     let executor = EXECUTOR.init(Executor::new());
     executor.run(|spawner| {
         spawner.spawn(run1()).ok();
         spawner.spawn(run2()).ok();
+        spawner.spawn(runi2c(i2c0)).ok();
     });
 
     // println!("Hello world!");
