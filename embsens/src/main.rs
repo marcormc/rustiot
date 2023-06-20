@@ -14,12 +14,15 @@ use hal::{
     Priority,
     IO,
     Rtc};
-
 use embassy_executor::Executor;
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 use icm42670::{prelude::*, Address, Icm42670};
 // use lis3dh_async::{Lis3dh, Range, SlaveAddr};
+use shared_bus;
+use shared_bus::I2cProxy;
+use shared_bus::NullMutex;
+use shared_bus::new_atomic_check;
 
 #[embassy_executor::task]
 async fn run1() {
@@ -37,8 +40,9 @@ async fn run2() {
     }
 }
 
+// async fn run_i2c(i2c: I2C<'static, I2C0>) {
 #[embassy_executor::task]
-async fn runi2c(i2c: I2C<'static, I2C0>) {
+async fn run_i2c(i2c: I2cProxy<'static, NullMutex<I2C<'static, I2C0>>>) {
     let mut icm = Icm42670::new(i2c, Address::Primary).unwrap();
 
     loop {
@@ -60,6 +64,41 @@ async fn runi2c(i2c: I2C<'static, I2C0>) {
 
     //    Timer::after(Duration::from_millis(100)).await;
     //}
+}
+
+#[embassy_executor::task]
+async fn run_htu(mut i2c: I2cProxy<'static, NullMutex<I2C<'static, I2C0>>>) {
+// async fn run_htu(bus: I2C<'static, I2C0>) {
+    const SI7021_I2C_ADDRESS: u8 = 0x40;
+    const MEASURE_RELATIVE_HUMIDITY: u8 = 0xE5;
+    const MEASURE_TEMPERATURE: u8 = 0xE3;
+    const READ_TEMPERATURE: u8 = 0xE0;
+
+    loop {
+        // medición de temperatura
+        let mut buf = [0u8; 2];
+        i2c.write(SI7021_I2C_ADDRESS, &[MEASURE_TEMPERATURE]).unwrap();
+        Timer::after(Duration::from_millis(50)).await;
+        i2c.read(SI7021_I2C_ADDRESS, &mut buf).unwrap();
+        // Escritura y lectura en una sola transacción: no funciona con
+        // este sensor:
+        // i2c.write_read(SI7021_I2C_ADDRESS, &[MEASURE_TEMPERATURE], &mut buf).unwrap();
+        let word = u16::from_be_bytes(buf);
+        let temp: f32 = 175.72 * word as f32 / 65536.0 - 46.85;
+        println!("buf {:?}, word: {}, temperatura: {}", buf, word, temp);
+
+        // medición de humedad
+        i2c.write(SI7021_I2C_ADDRESS, &[MEASURE_RELATIVE_HUMIDITY]).unwrap();
+        Timer::after(Duration::from_millis(50)).await;
+        i2c.read(SI7021_I2C_ADDRESS, &mut buf).unwrap();
+        // Escritura y lectura en una sola transacción: no funciona con
+        // este sensor:
+        // i2c.write_read(SI7021_I2C_ADDRESS, &[MEASURE_TEMPERATURE], &mut buf).unwrap();
+        let word = u16::from_be_bytes(buf);
+        let rel_hum = 125.0 * word as f32 / 65536.0 - 6.0;
+        // rel_hum = rel_hum.max(0.0).min(100.0);
+        println!("buf {:?}, word: {}, humedad: {}", buf, word, rel_hum);
+    }
 }
 
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
@@ -105,7 +144,7 @@ fn main() -> ! {
     // inicializa i2c
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
 
-    let i2c0 = I2C::new(
+    let i2c = I2C::new(
         peripherals.I2C0,
         io.pins.gpio10,
         io.pins.gpio8,
@@ -113,6 +152,8 @@ fn main() -> ! {
         &mut system.peripheral_clock_control,
         &clocks,
     );
+    let bus = shared_bus::BusManagerSimple::new(i2c);
+    // let bus: &'static _ = new_atomic_check!(I2c = i2c).unwrap();
 
     // let mut icm = Icm42670::new(i2c0, Address::Primary).unwrap();
     // let accel_norm = icm.accel_norm().unwrap();
@@ -127,7 +168,10 @@ fn main() -> ! {
     executor.run(|spawner| {
         spawner.spawn(run1()).ok();
         spawner.spawn(run2()).ok();
-        spawner.spawn(runi2c(i2c0)).ok();
+        // spawner.spawn(run_i2c(bus).ok();
+        // spawner.spawn(run_htu(bus.acquire_i2c())).ok();
+        spawner.spawn(run_i2c(bus.acquire_i2c())).ok();
+        spawner.spawn(run_htu(bus.acquire_i2c())).ok();
     });
 
     // println!("Hello world!");
