@@ -24,6 +24,13 @@ use shared_bus::I2cProxy;
 use shared_bus::NullMutex;
 use shared_bus::new_atomic_check;
 
+
+use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
+use embassy_sync::blocking_mutex::{NoopMutex, raw::NoopRawMutex};
+use core::cell::RefCell;
+
+static I2C_BUS: StaticCell<NoopMutex<RefCell<I2C<I2C0>>>> = StaticCell::new();
+
 #[embassy_executor::task]
 async fn run1() {
     loop {
@@ -42,7 +49,8 @@ async fn run2() {
 
 // async fn run_i2c(i2c: I2C<'static, I2C0>) {
 #[embassy_executor::task]
-async fn run_i2c(i2c: I2cProxy<'static, NullMutex<I2C<'static, I2C0>>>) {
+async fn run_i2c(i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) {
+// async fn run_i2c(i2c:  I2cProxy<'static, NullMutex<I2C<'static, I2C0>>>) {
     let mut icm = Icm42670::new(i2c, Address::Primary).unwrap();
 
     loop {
@@ -67,7 +75,8 @@ async fn run_i2c(i2c: I2cProxy<'static, NullMutex<I2C<'static, I2C0>>>) {
 }
 
 #[embassy_executor::task]
-async fn run_htu(mut i2c: I2cProxy<'static, NullMutex<I2C<'static, I2C0>>>) {
+async fn run_htu(mut i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) {
+// async fn run_htu(mut i2c: I2cProxy<'static, NullMutex<I2C<'static, I2C0>>>) {
 // async fn run_htu(bus: I2C<'static, I2C0>) {
     const SI7021_I2C_ADDRESS: u8 = 0x40;
     const MEASURE_RELATIVE_HUMIDITY: u8 = 0xE5;
@@ -152,15 +161,29 @@ fn main() -> ! {
         &mut system.peripheral_clock_control,
         &clocks,
     );
-    let bus = shared_bus::BusManagerSimple::new(i2c);
-    // let bus: &'static _ = new_atomic_check!(I2c = i2c).unwrap();
+    let i2c_bus = NoopMutex::new(RefCell::new(i2c));
+    let i2c_bus = I2C_BUS.init(i2c_bus);
 
-    // let mut icm = Icm42670::new(i2c0, Address::Primary).unwrap();
-    // let accel_norm = icm.accel_norm().unwrap();
-    // let gyro_norm = icm.gyro_norm().unwrap();
-    // println!(
-    //     "ACCEL  =  X: {:+.04} Y: {:+.04} Z: {:+.04}\t\tGYRO  =  X: {:+.04} Y: {:+.04} Z: {:+.04}",
-    //     accel_norm.x, accel_norm.y, accel_norm.z, gyro_norm.x, gyro_norm.y, gyro_norm.z);
+    let i2c_dev1 = I2cDevice::new(i2c_bus);
+    let i2c_dev2 = I2cDevice::new(i2c_bus);
+
+    //let mut icm = Icm42670::new(i2c_dev1, Address::Primary).unwrap();
+    //let accel_norm = icm.accel_norm().unwrap();
+    //let gyro_norm = icm.gyro_norm().unwrap();
+    //println!(
+    //    "ACCEL  =  X: {:+.04} Y: {:+.04} Z: {:+.04}\t\tGYRO  =  X: {:+.04} Y: {:+.04} Z: {:+.04}",
+    //    accel_norm.x, accel_norm.y, accel_norm.z, gyro_norm.x, gyro_norm.y, gyro_norm.z);
+
+
+
+    //let mut icm2 = Icm42670::new(i2c_dev2, Address::Primary).unwrap();
+    //let accel_norm = icm2.accel_norm().unwrap();
+    //let gyro_norm = icm2.gyro_norm().unwrap();
+    //println!(
+    //    "ACCEL  =  X: {:+.04} Y: {:+.04} Z: {:+.04}\t\tGYRO  =  X: {:+.04} Y: {:+.04} Z: {:+.04}",
+    //    accel_norm.x, accel_norm.y, accel_norm.z, gyro_norm.x, gyro_norm.y, gyro_norm.z);
+
+
 
     hal::interrupt::enable(Interrupt::I2C_EXT0, Priority::Priority1).unwrap();
 
@@ -170,8 +193,8 @@ fn main() -> ! {
         spawner.spawn(run2()).ok();
         // spawner.spawn(run_i2c(bus).ok();
         // spawner.spawn(run_htu(bus.acquire_i2c())).ok();
-        spawner.spawn(run_i2c(bus.acquire_i2c())).ok();
-        spawner.spawn(run_htu(bus.acquire_i2c())).ok();
+        spawner.spawn(run_i2c(i2c_dev1)).ok();
+        spawner.spawn(run_htu(i2c_dev2)).ok();
     });
 
     // println!("Hello world!");
