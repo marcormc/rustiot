@@ -13,13 +13,11 @@ embassy-executor = { version = "0.2.0", features = ["nightly", "integrated-timer
 static_cell = "1.0.0"
 embassy-time = { version = "0.1.1", features = ["nightly"] }
 icm42670 = "0.1.1"
+# Some parts of embassy not published yet
 embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy" }
 embassy-sync = { git = "https://github.com/embassy-rs/embassy" }
-# https://github.com/embassy-rs/embassy/tree/main/embassy-embedded-hal
-
-
 embedded-hal-nb    = { version = "=1.0.0-alpha.2" }
 embedded-hal       = { version = "0.2.7", features = ["unproven"] }
 embedded-hal-async = { version = "0.2.0-alpha.1"  }
-lis3dh-async = "0.7.0"
-shared-bus = { version = "0.2.5", features = ["cortex-m"] }
+# lis3dh-async = "0.7.0"
+# shared-bus = { version = "0.2.5", features = ["cortex-m"] }
