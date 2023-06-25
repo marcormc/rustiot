@@ -11,6 +11,12 @@ rustflags = [
   # comment the cfgs below if you do _not_ wish to emulate atomics.
   # enable the atomic codegen option for RISCV
   "-C", "target-feature=+a",
+
+  # Necesario para que se enlacen las librerías compiladas en el crate
+  # esp-wifi-sys a partir de código en C. En caso contrario, aunque compila
+  # todo dará error al enlazar.
+  "-C", "link-arg=-Trom_functions.x",
+
   # tell the core library have atomics even though it's not specified in the target definition
   "--cfg", "target_has_atomic_load_store",
   "--cfg", 'target_has_atomic_load_store="8"',

@@ -6,7 +6,8 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-hal = { package = "esp32c3-hal", version = "0.9.0", features = ["embassy", "async", "embassy-time-systick"] }
+# hal = { package = "esp32c3-hal", version = "0.9.0", features = ["embassy", "async", "embassy-time-systick"] }
+hal = { package = "esp32c3-hal", version = "0.9.0", features = ["embassy", "async", "embassy-time-timg0"] }
 esp-backtrace = { version = "0.7.0", features = ["esp32c3", "panic-handler", "exception-handler", "print-uart"] }
 esp-println = { version = "0.5.0", features = ["esp32c3"] }
 embassy-executor = { version = "0.2.0", features = ["nightly", "integrated-timers", "arch-riscv32", "executor-thread"] }
@@ -16,8 +17,32 @@ icm42670 = "0.1.1"
 # Some parts of embassy not published yet
 embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy" }
 embassy-sync = { git = "https://github.com/embassy-rs/embassy" }
+
 embedded-hal-nb    = { version = "=1.0.0-alpha.2" }
 embedded-hal       = { version = "0.2.7", features = ["unproven"] }
 embedded-hal-async = { version = "0.2.0-alpha.1"  }
 # lis3dh-async = "0.7.0"
 # shared-bus = { version = "0.2.5", features = ["cortex-m"] }
+# esp-wifi = { package = "esp-wifi", git = "https://github.com/esp-rs/esp-wifi", features = ["esp32c3"] }
+esp-wifi = { git = "https://github.com/esp-rs/esp-wifi", features = ["async", "esp32c3", "wifi", "embassy-net"] }
+esp-wifi-sys = { git = "https://github.com/esp-rs/esp-wifi" }
+
+embedded-svc = { version = "0.25.1", default-features = false, features = [] }
+embedded-io = "0.4.0"
+# embassy-net = { git = "https://github.com/embassy-rs/embassy" }
+embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "fb27594", features = ["nightly", "tcp", "udp", "dhcpv4", "medium-ethernet"] }
+
+# esp-wifi-sys = { version = "0.1.0", path = "../esp-wifi-sys" }
+
+# esp32c3 = { version = "0.14.0",  features = ["critical-section"] }
+esp32c3 = { version = "0.15.0",  features = ["critical-section"] }
+
+smoltcp = { version = "0.9.1", default-features=false, features = ["proto-igmp", "proto-ipv4", "socket-tcp", "socket-icmp", "socket-udp", "medium-ethernet", "proto-dhcpv4", "socket-raw", "socket-dhcpv4"] }
+critical-section = "1.1.1"
+atomic-polyfill = "1.0.1"
+
+
+# For esp-wifi: It is necessary to build with optimization level 2 or 3 since
+# otherwise it might not even be able to connect or advertise.
+[profile.dev.package.esp-wifi]
+opt-level = 3
