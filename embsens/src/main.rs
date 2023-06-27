@@ -10,7 +10,7 @@ use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_println::println;
 use hal::{
-    clock::ClockControl,
+    clock::{ClockControl, CpuClock},
     embassy,
     i2c::I2C,
     peripherals::{Interrupt, Peripherals, I2C0},
@@ -28,6 +28,7 @@ use embedded_svc::wifi::{ClientConfiguration, Configuration, Wifi};
 use esp_wifi::wifi::{WifiController, WifiDevice, WifiEvent, WifiMode, WifiState};
 use esp_wifi::{initialize, EspWifiInitFor};
 use hal::Rng;
+use hal::system::SystemExt;
 
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
@@ -123,10 +124,12 @@ fn main() -> ! {
     println!("Embassy sharing I2C bus test.");
     let peripherals = Peripherals::take();
     let mut system = peripherals.SYSTEM.split();
-    let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
+    // let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
+    let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock160MHz).freeze();
 
     // Disable the RTC and TIMG watchdog timers
     let mut rtc = Rtc::new(peripherals.RTC_CNTL);
+
     let timer_group0 = TimerGroup::new(
         peripherals.TIMG0,
         &clocks,
@@ -181,7 +184,6 @@ fn main() -> ! {
     // embassy::init(
     //     &clocks,
     //     timer, // hal::systimer::SystemTimer::new(peripherals.SYSTIMER),
-        
     // );
 
     // Not available in ESP32-C3
@@ -189,31 +191,31 @@ fn main() -> ! {
     embassy::init(&clocks, timer_group0.timer0);
 
     // i2c initialization. Pins GPIO10 SDA, GPIO8 CLK
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
-    let i2c = I2C::new(
-        peripherals.I2C0,
-        io.pins.gpio10,
-        io.pins.gpio8,
-        400u32.kHz(),
-        &mut system.peripheral_clock_control,
-        &clocks,
-    );
-    // Create i2c_bus with static lifetime
-    let i2c_bus = NoopMutex::new(RefCell::new(i2c));
-    let i2c_bus = I2C_BUS.init(i2c_bus);
+    //       let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    //       let i2c = I2C::new(
+    //           peripherals.I2C0,
+    //           io.pins.gpio10,
+    //           io.pins.gpio8,
+    //           400u32.kHz(),
+    //           &mut system.peripheral_clock_control,
+    //           &clocks,
+    //       );
+    //       // Create i2c_bus with static lifetime
+    //       let i2c_bus = NoopMutex::new(RefCell::new(i2c));
+    //       let i2c_bus = I2C_BUS.init(i2c_bus);
 
-    // share the i2c bus between devices in embassy (sync)
-    let i2c_dev1 = I2cDevice::new(i2c_bus);
-    let i2c_dev2 = I2cDevice::new(i2c_bus);
+    //       // share the i2c bus between devices in embassy (sync)
+    //       let i2c_dev1 = I2cDevice::new(i2c_bus);
+    //       let i2c_dev2 = I2cDevice::new(i2c_bus);
 
-    hal::interrupt::enable(Interrupt::I2C_EXT0, Priority::Priority1).unwrap();
+    //       hal::interrupt::enable(Interrupt::I2C_EXT0, Priority::Priority1).unwrap();
 
     let executor = EXECUTOR.init(Executor::new());
     executor.run(|spawner| {
-        spawner.spawn(run1()).ok();
-        spawner.spawn(run2()).ok();
-        spawner.spawn(run_i2c(i2c_dev1)).ok();
-        spawner.spawn(run_htu(i2c_dev2)).ok();
+        // spawner.spawn(run1()).ok();
+        // spawner.spawn(run2()).ok();
+        // spawner.spawn(run_i2c(i2c_dev1)).ok();
+        // spawner.spawn(run_htu(i2c_dev2)).ok();
         
         spawner.spawn(connection(controller)).ok();
         spawner.spawn(net_task(&stack)).ok();

@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 # hal = { package = "esp32c3-hal", version = "0.9.0", features = ["embassy", "async", "embassy-time-systick"] }
 hal = { package = "esp32c3-hal", version = "0.9.0", features = ["embassy", "async", "embassy-time-timg0"] }
 esp-backtrace = { version = "0.7.0", features = ["esp32c3", "panic-handler", "exception-handler", "print-uart"] }
-esp-println = { version = "0.5.0", features = ["esp32c3"] }
+esp-println = { version = "0.5.0", features = ["esp32c3", "log"] }
 embassy-executor = { version = "0.2.0", features = ["nightly", "integrated-timers", "arch-riscv32", "executor-thread"] }
 static_cell = "1.0.0"
 embassy-time = { version = "0.1.1", features = ["nightly"] }
@@ -19,15 +19,17 @@ embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy" }
 embassy-sync = { git = "https://github.com/embassy-rs/embassy" }
 
 embedded-hal-nb    = { version = "=1.0.0-alpha.2" }
-embedded-hal       = { version = "0.2.7", features = ["unproven"] }
-embedded-hal-async = { version = "0.2.0-alpha.1"  }
+# embedded-hal       = { version = "0.2.7", features = ["unproven"] }
+embedded-hal       = { version = "0.2.3" }
+# embedded-hal-async = { version = "0.2.0-alpha.1"  }
+embedded-hal-async = { version = "0.2.0-alpha.0"  }
 # lis3dh-async = "0.7.0"
 # shared-bus = { version = "0.2.5", features = ["cortex-m"] }
 # esp-wifi = { package = "esp-wifi", git = "https://github.com/esp-rs/esp-wifi", features = ["esp32c3"] }
-esp-wifi = { git = "https://github.com/esp-rs/esp-wifi", features = ["async", "esp32c3", "wifi", "embassy-net"] }
+esp-wifi = { git = "https://github.com/esp-rs/esp-wifi", features = ["async", "esp32c3", "wifi", "embassy-net", "wifi-logs"] }
 esp-wifi-sys = { git = "https://github.com/esp-rs/esp-wifi" }
 
-embedded-svc = { version = "0.25.1", default-features = false, features = [] }
+embedded-svc = { version = "0.25.0", default-features = false, features = [] }
 embedded-io = "0.4.0"
 # embassy-net = { git = "https://github.com/embassy-rs/embassy" }
 embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "fb27594", features = ["nightly", "tcp", "udp", "dhcpv4", "medium-ethernet"] }
@@ -41,6 +43,11 @@ smoltcp = { version = "0.9.1", default-features=false, features = ["proto-igmp",
 critical-section = "1.1.1"
 atomic-polyfill = "1.0.1"
 
+bleps = { git = "https://github.com/bjoernQ/bleps", package = "bleps", rev = "b82f1e7009bef7e32f0918be5b186188aa5e7109", features = ["macros"] }
+embassy-futures = { version = "0.1.0" }
+futures-util = { version = "0.3.17", default-features = false }
+log = "0.4.17"
+heapless = { version = "0.7.14", default-features = false }
 
 # For esp-wifi: It is necessary to build with optimization level 2 or 3 since
 # otherwise it might not even be able to connect or advertise.
