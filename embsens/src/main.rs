@@ -10,12 +10,12 @@ use core::cell::RefCell;
 use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
 use embassy_executor::Executor;
 use embassy_net::tcp::TcpSocket;
-use embassy_net::{Config, Ipv4Address, Stack, StackResources};
+use embassy_net::{Config, Ipv4Address, Stack, StackResources, Ipv4Cidr};
 // use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 // si hay 1 solo core (1 solo thread) (feature cortex-m)
 // use embassy_sync::blocking_mutex::raw::thread_mode::ThreadModeRawMutex;
 
-use embassy_sync::blocking_mutex::{raw::NoopRawMutex, raw::CriticalSectionRawMutex, NoopMutex};
+use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, raw::NoopRawMutex, NoopMutex};
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use embedded_svc::wifi::{ClientConfiguration, Configuration, Wifi};
@@ -52,9 +52,11 @@ macro_rules! singleton {
 // #[derive(Debug, Clone)]
 #[derive(Debug)]
 pub enum Signal {
-    WifiConnected,
+    WifiStaConnected,
+    WifiConnected(Ipv4Cidr),
     WifiDisconnected,
-    SensorData(f32),
+    TempHumData { temp: f32, hum: f32 },
+    AccelDataData([f32; 6]),
 }
 
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
@@ -64,7 +66,6 @@ static I2C_BUS: StaticCell<NoopMutex<RefCell<I2C<I2C0>>>> = StaticCell::new();
 
 // si hay 1 solo core (1 solo thread)
 // static CHANNEL: Channel<ThreadModeRawMutex, Signal, 10> = Channel::new();
-
 // static CHANNEL: Channel<NoopRawMutex, Signal, 10> = Channel::new();
 // static CHANNEL: Channel<NoopRawMutex, u32, 10> = Channel::new();
 static CHANNEL: Channel<CriticalSectionRawMutex, Signal, 10> = Channel::new();
@@ -183,9 +184,9 @@ async fn connection(mut controller: WifiController<'static>) {
         println!("About to connect...");
 
         match controller.connect().await {
-            Ok(_) => { 
+            Ok(_) => {
                 println!("Wifi connected!");
-                CHANNEL.send(Signal::WifiConnected).await;
+                CHANNEL.send(Signal::WifiStaConnected).await;
             }
             Err(e) => {
                 println!("Failed to connect to wifi: {e:?}");
@@ -216,6 +217,7 @@ async fn task(stack: &'static Stack<WifiDevice<'static>>) {
     loop {
         if let Some(config) = stack.config() {
             println!("Got IP: {}", config.address);
+            CHANNEL.send(Signal::WifiConnected(config.address)).await;
             break;
         }
         Timer::after(Duration::from_millis(500)).await;
@@ -275,7 +277,17 @@ async fn run_i2c(i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) {
             "ACCEL  =  X: {:+.04} Y: {:+.04} Z: {:+.04}\t\tGYRO  =  X: {:+.04} Y: {:+.04} Z: {:+.04}",
             accel_norm.x, accel_norm.y, accel_norm.z, gyro_norm.x, gyro_norm.y, gyro_norm.z);
         // delay.delay_ms(100u32);
-        Timer::after(Duration::from_millis(100)).await;
+        CHANNEL
+            .send(Signal::AccelDataData([
+                accel_norm.x,
+                accel_norm.y,
+                accel_norm.z,
+                gyro_norm.x,
+                gyro_norm.y,
+                gyro_norm.z,
+            ]))
+            .await;
+        Timer::after(Duration::from_millis(5000)).await;
     }
 }
 
@@ -289,6 +301,7 @@ async fn run_htu(mut i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) 
     // const READ_TEMPERATURE: u8 = 0xE0;
 
     loop {
+        Timer::after(Duration::from_millis(4000)).await;
         // medición de temperatura
         let mut buf = [0u8; 2];
         i2c.write(SI7021_I2C_ADDRESS, &[MEASURE_TEMPERATURE])
@@ -314,6 +327,9 @@ async fn run_htu(mut i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) 
         let rel_hum = 125.0 * word as f32 / 65536.0 - 6.0;
         // rel_hum = rel_hum.max(0.0).min(100.0);
         println!("buf {:?}, word: {}, humedad: {}", buf, word, rel_hum);
+        CHANNEL
+            .send(Signal::TempHumData { temp, hum: rel_hum })
+            .await;
     }
 }
 
