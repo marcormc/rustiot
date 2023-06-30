@@ -5,13 +5,18 @@
 pub use esp32c3_hal as hal;
 
 // use embassy_executor::_export::StaticCell;
+
+use core::cell::RefCell;
+use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
+use embassy_executor::Executor;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, Ipv4Address, Stack, StackResources};
-// use examples_util::hal;
-use embassy_sync::blocking_mutex::{raw::NoopRawMutex, NoopMutex};
-use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
+// use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+// si hay 1 solo core (1 solo thread) (feature cortex-m)
+// use embassy_sync::blocking_mutex::raw::thread_mode::ThreadModeRawMutex;
 
-use embassy_executor::Executor;
+use embassy_sync::blocking_mutex::{raw::NoopRawMutex, raw::CriticalSectionRawMutex, NoopMutex};
+use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use embedded_svc::wifi::{ClientConfiguration, Configuration, Wifi};
 use esp_backtrace as _;
@@ -19,24 +24,18 @@ use esp_println::logger::init_logger;
 use esp_println::println;
 use esp_wifi::wifi::{WifiController, WifiDevice, WifiEvent, WifiMode, WifiState};
 use esp_wifi::{initialize, EspWifiInitFor};
+use hal::system::SystemExt;
 use hal::{
     clock::{ClockControl, CpuClock},
     embassy,
     i2c::I2C,
-    Rng,
-    peripherals::{Interrupt, Peripherals, I2C0},    
+    peripherals::{Interrupt, Peripherals, I2C0},
     prelude::*,
     timer::TimerGroup,
-    IO,
-    Priority,
-    Rtc
+    Priority, Rng, Rtc, IO,
 };
-use hal::system::SystemExt;
-
 use icm42670::{prelude::*, Address, Icm42670};
 use static_cell::StaticCell;
-use core::cell::RefCell;
-
 
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
@@ -50,19 +49,31 @@ macro_rules! singleton {
     }};
 }
 
-static EXECUTOR: StaticCell<Executor> = StaticCell::new();
+// #[derive(Debug, Clone)]
+#[derive(Debug)]
+pub enum Signal {
+    WifiConnected,
+    WifiDisconnected,
+    SensorData(f32),
+}
 
+static EXECUTOR: StaticCell<Executor> = StaticCell::new();
 
 // I2C bus static reference for sharing bus between tasks
 static I2C_BUS: StaticCell<NoopMutex<RefCell<I2C<I2C0>>>> = StaticCell::new();
 
+// si hay 1 solo core (1 solo thread)
+// static CHANNEL: Channel<ThreadModeRawMutex, Signal, 10> = Channel::new();
 
+// static CHANNEL: Channel<NoopRawMutex, Signal, 10> = Channel::new();
+// static CHANNEL: Channel<NoopRawMutex, u32, 10> = Channel::new();
+static CHANNEL: Channel<CriticalSectionRawMutex, Signal, 10> = Channel::new();
 
 #[entry]
 fn main() -> ! {
     init_logger(log::LevelFilter::Info);
     println!("embwifis: Embassy wifi + sharing I2C bus test.");
-    
+
     let peripherals = Peripherals::take();
     let system = peripherals.SYSTEM.split();
     let mut peripheral_clock_control = system.peripheral_clock_control;
@@ -103,7 +114,6 @@ fn main() -> ! {
         seed
     ));
 
-
     // i2c initialization. Pins GPIO10 SDA, GPIO8 CLK
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
     let i2c = I2C::new(
@@ -125,9 +135,9 @@ fn main() -> ! {
 
     hal::interrupt::enable(Interrupt::I2C_EXT0, Priority::Priority1).unwrap();
 
-    
     let executor = EXECUTOR.init(Executor::new());
     executor.run(|spawner| {
+        spawner.spawn(fsm()).ok();
         spawner.spawn(connection(controller)).ok();
         spawner.spawn(net_task(&stack)).ok();
         spawner.spawn(task(&stack)).ok();
@@ -136,6 +146,14 @@ fn main() -> ! {
         spawner.spawn(run1()).ok();
         spawner.spawn(run2()).ok();
     })
+}
+
+#[embassy_executor::task]
+async fn fsm() {
+    loop {
+        let signal = CHANNEL.recv().await;
+        println!("Señal recibida: {:?}", signal);
+    }
 }
 
 #[embassy_executor::task]
@@ -165,7 +183,10 @@ async fn connection(mut controller: WifiController<'static>) {
         println!("About to connect...");
 
         match controller.connect().await {
-            Ok(_) => println!("Wifi connected!"),
+            Ok(_) => { 
+                println!("Wifi connected!");
+                CHANNEL.send(Signal::WifiConnected).await;
+            }
             Err(e) => {
                 println!("Failed to connect to wifi: {e:?}");
                 Timer::after(Duration::from_millis(5000)).await
@@ -242,7 +263,6 @@ async fn task(stack: &'static Stack<WifiDevice<'static>>) {
     }
 }
 
-
 /// Embassy task to read accelerometer sensor on board (ICM42670)
 #[embassy_executor::task]
 async fn run_i2c(i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) {
@@ -258,7 +278,6 @@ async fn run_i2c(i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) {
         Timer::after(Duration::from_millis(100)).await;
     }
 }
-
 
 /// Embassy task to read external I2C sensor HTU21D similar to SI7021.
 /// Not using device driver, writing and reading directly from i2c.
