@@ -31,6 +31,7 @@ Ligado a Drogue-iot y parece con muy pocas descargas.
 ### mqttrust
 
 Parece viable aunque hay que programar bastante, pero hay un ejemplo.
+El ejemplo (temperature logger) no incluye embassy y hay algunos bucles con esperas).
 
 [GitHub - bjoernQ/esp32-rust-nostd-temperature-logger: MQTT temperature logger running on ESP32 in Rust (no-std / no RTOS)](https://github.com/bjoernQ/esp32-rust-nostd-temperature-logger)
 Aquí usan mqttrust sobre smoltcp. Sin embasssy, con esp32-hal, no-std.

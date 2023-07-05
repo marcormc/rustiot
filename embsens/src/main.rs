@@ -37,6 +37,11 @@ use hal::{
 use icm42670::{prelude::*, Address, Icm42670};
 use static_cell::StaticCell;
 
+use crate::tiny_mqtt::TinyMqtt;
+use core::fmt::Write;
+use mqttrust::encoding::v4::Pid;
+mod tiny_mqtt;
+
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
 
@@ -103,7 +108,8 @@ fn main() -> ! {
     let timer_group0 = TimerGroup::new(peripherals.TIMG0, &clocks, &mut peripheral_clock_control);
     embassy::init(&clocks, timer_group0.timer0);
 
-    let config = Config::Dhcp(Default::default());
+    // let config = Config::Dhcp(Default::default());
+    let config = Config::dhcpv4(Default::default());
 
     let seed = 1234; // very random, very secure seed
 
@@ -141,11 +147,12 @@ fn main() -> ! {
         spawner.spawn(fsm()).ok();
         spawner.spawn(connection(controller)).ok();
         spawner.spawn(net_task(&stack)).ok();
-        spawner.spawn(task(&stack)).ok();
-        spawner.spawn(run_i2c(i2c_dev1)).ok();
-        spawner.spawn(run_htu(i2c_dev2)).ok();
-        spawner.spawn(run1()).ok();
-        spawner.spawn(run2()).ok();
+        // spawner.spawn(http_task(&stack)).ok();
+        spawner.spawn(mqtt_task(&stack)).ok();
+        // spawner.spawn(run_i2c(i2c_dev1)).ok();
+        // spawner.spawn(run_htu(i2c_dev2)).ok();
+        // spawner.spawn(run1()).ok();
+        // spawner.spawn(run2()).ok();
     })
 }
 
@@ -202,7 +209,7 @@ async fn net_task(stack: &'static Stack<WifiDevice<'static>>) {
 }
 
 #[embassy_executor::task]
-async fn task(stack: &'static Stack<WifiDevice<'static>>) {
+async fn http_task(stack: &'static Stack<WifiDevice<'static>>) {
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
 
@@ -215,7 +222,7 @@ async fn task(stack: &'static Stack<WifiDevice<'static>>) {
 
     println!("Waiting to get IP address...");
     loop {
-        if let Some(config) = stack.config() {
+        if let Some(config) = stack.config_v4() {
             println!("Got IP: {}", config.address);
             CHANNEL.send(Signal::WifiConnected(config.address)).await;
             break;
@@ -228,7 +235,8 @@ async fn task(stack: &'static Stack<WifiDevice<'static>>) {
 
         let mut socket = TcpSocket::new(&stack, &mut rx_buffer, &mut tx_buffer);
 
-        socket.set_timeout(Some(embassy_net::SmolDuration::from_secs(10)));
+        // socket.set_timeout(Some(embassy_net::SmolDuration::from_secs(10)));
+        socket.set_timeout(Some(Duration::from_secs(10)));
 
         let remote_endpoint = (Ipv4Address::new(142, 250, 185, 115), 80);
         println!("connecting...");
@@ -346,5 +354,128 @@ async fn run2() {
     loop {
         println!("Bing!");
         Timer::after(Duration::from_millis(5_000)).await;
+    }
+}
+
+// //////////////////////////////////////////////////////////////////////////
+// //////////////////////////////////////////////////////////////////////////
+// //////////////////////////////////////////////////////////////////////////
+
+#[embassy_executor::task]
+async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>) {
+    let mut rx_buffer = [0; 4096];
+    let mut tx_buffer = [0; 4096];
+
+    loop {
+        if stack.is_link_up() {
+            break;
+        }
+        Timer::after(Duration::from_millis(500)).await;
+    }
+
+    println!("Waiting to get IP address...");
+    loop {
+        if let Some(config) = stack.config_v4() {
+            println!("Got IP: {}", config.address);
+            break;
+        }
+        Timer::after(Duration::from_millis(500)).await;
+    }
+
+    loop {
+        Timer::after(Duration::from_millis(1_000)).await;
+
+        let mut socket = TcpSocket::new(&stack, &mut rx_buffer, &mut tx_buffer);
+
+        // socket.set_timeout(Some(embassy_net::SmolDuration::from_secs(30)));
+        socket.set_timeout(Some(Duration::from_secs(30)));
+
+        // MQTT server test.mosquitto.org:  91.121.93.94:1883
+        let remote_endpoint = (Ipv4Address::new(91, 121, 93, 94), 1883);
+        println!("connecting socket...");
+        let r = socket.connect(remote_endpoint).await;
+        if let Err(e) = r {
+            println!("connect error: {:?}", e);
+            continue;
+        }
+        println!("TCP socket connected to MQTT server!");
+
+        let mut mqtt = TinyMqtt::new("esp32", socket, esp_wifi::current_millis, None);
+        if let Err(e) = mqtt.connect(
+            // Ipv4Address::new(52, 54, 163, 195), // io.adafruit.com
+            remote_endpoint.0,
+            // 1883,
+            remote_endpoint.1,
+            60,
+            None, // Some(ADAFRUIT_IO_USERNAME),
+            None, // Some(ADAFRUIT_IO_KEY.as_bytes()),
+        ) {
+            println!(
+                "Something went wrong ... retrying in 10 seconds. Error is {:?}",
+                e
+            );
+            // wait a bit and try it again
+            // sleep_millis(10_000);
+            Timer::after(Duration::from_millis(10_000)).await;
+            continue;
+        }
+        println!("Connected to MQTT broker");
+        
+        // envio de paquetes con datos en un topic
+        let mut topic_name: heapless::String<32> = heapless::String::new();
+        write!(topic_name, "/embsens/test{}", 1).ok();
+
+        let mut pkt_num = 10;
+        loop {
+            println!("iniciando poll");
+            if mqtt.poll().await.is_err() {
+                println!("Error en poll");
+                break;
+            }
+            println!("esperando para enviar paquete");
+            Timer::after(Duration::from_millis(5000)).await;
+            let temperature = 42.0;
+            let mut msg: heapless::String<32> = heapless::String::new();
+            write!(msg, "{}", temperature).ok();
+            if mqtt
+                .publish_with_pid(
+                    Some(Pid::try_from(pkt_num).unwrap()),
+                    &topic_name,
+                    msg.as_bytes(),
+                    mqttrust::QoS::AtLeastOnce,
+                )
+                .is_err()
+            {
+                println!("error enviando paquete");
+                break;
+            }
+            pkt_num += 1;
+        }
+
+            
+        // let mut buf = [0; 1024];
+        // loop {
+        //     use embedded_io::asynch::Write;
+        //     let r = socket
+        //         .write_all(b"GET / HTTP/1.0\r\nHost: www.mobile-j.de\r\n\r\n")
+        //         .await;
+        //     if let Err(e) = r {
+        //         println!("write error: {:?}", e);
+        //         break;
+        //     }
+        //     let n = match socket.read(&mut buf).await {
+        //         Ok(0) => {
+        //             println!("read EOF");
+        //             break;
+        //         }
+        //         Ok(n) => n,
+        //         Err(e) => {
+        //             println!("read error: {:?}", e);
+        //             break;
+        //         }
+        //     };
+        //     println!("{}", core::str::from_utf8(&buf[..n]).unwrap());
+        // }
+        Timer::after(Duration::from_millis(3000)).await;
     }
 }
