@@ -1,4 +1,4 @@
-# Ejemplo con Embassy (no-std), i2c y wifi
+# embsens. Ejemplo con Embassy (no-std), i2c y wifi
 
 Compilar con :
 
