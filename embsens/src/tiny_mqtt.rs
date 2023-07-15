@@ -1,3 +1,5 @@
+use embassy_net::tcp::TcpSocket;
+use embassy_net::Ipv4Address;
 use embedded_io::blocking::{Read, Write};
 use esp_println::println;
 use esp_wifi::{compat::queue::SimpleQueue, wifi::WifiError};
@@ -5,8 +7,6 @@ use mqttrust::{
     encoding::v4::{decode_slice, encode_slice, Connect, Pid, Protocol},
     Mqtt, MqttError, Packet, Publish, QoS, Subscribe, SubscribeTopic,
 };
-// use smoltcp::wire::Ipv4Address;
-use embassy_net::Ipv4Address;
 
 #[derive(Debug)]
 pub enum TinyMqttError {
@@ -44,15 +44,15 @@ impl PacketBuffer {
     }
 }
 
-use embassy_net::tcp::TcpSocket;
-
 pub struct TinyMqtt<'a> {
     client_id: &'a str,
-    // socket: esp_wifi::wifi_interface::Socket<'a, 'a>,
+    // TCP socket for the MQTT connection
     socket: TcpSocket<'a>,
+    // Queue of encoded packages to send
     queue: core::cell::RefCell<SimpleQueue<(usize, [u8; 1024]), 10>>,
     recv_buffer: [u8; 1024],
     recv_index: usize,
+    // Queue of encoded packages to receive
     recv_queue: core::cell::RefCell<SimpleQueue<PacketBuffer, 10>>,
     timeout_secs: u16,
     last_sent_millis: u64,
@@ -180,7 +180,7 @@ impl<'a> TinyMqtt<'a> {
 
         println!("send_internal");
         self.send_internal().await?;
-        
+
         // self.receive_internal()?;
         println!("receive_internal");
         self.receive_internal().await?;
@@ -206,9 +206,13 @@ impl<'a> TinyMqtt<'a> {
             // let len = self.socket.read(&mut buffer).unwrap();
             if self.socket.can_recv() {
                 println!("can_recv true");
+                // socket.read() won't block, there are data waiting to be read.
+                // TODO: create Embassy task to await on read()
             } else {
                 println!("can_recv false");
-                return Ok(())
+                // nothing received in the socket, if read() is called it will
+                // block until something arrives.
+                return Ok(());
             }
             let len = self.socket.read(&mut buffer).await.unwrap();
             // let state = self.socket.state();
