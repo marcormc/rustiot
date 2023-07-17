@@ -47,7 +47,7 @@ impl PacketBuffer {
 pub struct TinyMqtt<'a> {
     client_id: &'a str,
     // TCP socket for the MQTT connection
-    socket: TcpSocket<'a>,
+    pub socket: TcpSocket<'a>,
     // Queue of encoded packages to send
     queue: core::cell::RefCell<SimpleQueue<(usize, [u8; 1024]), 10>>,
     recv_buffer: [u8; 1024],
@@ -58,19 +58,27 @@ pub struct TinyMqtt<'a> {
     last_sent_millis: u64,
     current_millis_fn: fn() -> u64,
     receive_callback: Option<&'a dyn Fn(&str, &[u8])>,
+    // for TCP socket:
+    // rx_buffer: [u8; 4096],
+    // tx_buffer: [u8; 4096],
 }
+
+use esp_wifi::wifi::WifiDevice;
+use embassy_net::Stack;
 
 impl<'a> TinyMqtt<'a> {
     pub fn new(
         client_id: &'a str,
-        // socket: esp_wifi::wifi_interface::Socket<'a, 'a>,
         socket: TcpSocket<'a>,
         current_millis_fn: fn() -> u64,
         receive_callback: Option<&'a dyn Fn(&str, &[u8])>,
+        stack: &'static Stack<WifiDevice<'static>>
     ) -> TinyMqtt<'a> {
         let res = TinyMqtt {
             client_id,
             socket,
+            // socket: TcpSocket::new(&stack, &mut self.rx_buffer, &mut self.tx_buffer),
+            // socket: TcpSocket::new(&stack, &mut Self::rx_buffer, &mut [0u8; 4096]),
             queue: core::cell::RefCell::new(SimpleQueue::new()),
             recv_buffer: [0u8; 1024],
             recv_index: 0,
@@ -79,7 +87,10 @@ impl<'a> TinyMqtt<'a> {
             last_sent_millis: 0,
             current_millis_fn,
             receive_callback,
+            // rx_buffer: [0; 4096],
+            // tx_buffer: [0; 4096],
         };
+        // res.socket = TcpSocket::new(&stack, &mut res.rx_buffer, &mut res.tx_buffer);
 
         res
     }
@@ -106,7 +117,7 @@ impl<'a> TinyMqtt<'a> {
             username,
             password,
         });
-        println!("Paquete connect: {:?}", connect);
+        // println!("MQTT Connect packet sent: {:?}", connect);
         self.send(connect)?;
         self.last_sent_millis = (self.current_millis_fn)();
 
@@ -181,25 +192,29 @@ impl<'a> TinyMqtt<'a> {
         println!("send_internal");
         self.send_internal().await?;
 
-        // self.receive_internal()?;
-        println!("receive_internal");
-        self.receive_internal().await?;
+        // println!("receive_internal");
+        // self.receive_internal().await?;
 
-        // just drain the received packets for now
-        println!("drain packets");
-        if drain_receive_queue {
-            while let Some(received) = self.recv_queue.borrow_mut().dequeue() {
-                if let Packet::Publish(publish) = received.parsed() {
-                    if let Some(callback) = self.receive_callback {
-                        callback(publish.topic_name, publish.payload);
-                    }
-                }
-            }
-        }
+        // // just drain the received packets for now
+        // println!("drain packets");
+        // if drain_receive_queue {
+        //     while let Some(received) = self.recv_queue.borrow_mut().dequeue() {
+        //         if let Packet::Publish(publish) = received.parsed() {
+        //             if let Some(callback) = self.receive_callback {
+        //                 callback(publish.topic_name, publish.payload);
+        //             }
+        //         }
+        //     }
+        // }
 
         Ok(())
     }
 
+    pub async fn receive(&mut self) -> Result<(), TinyMqttError> {
+        self.receive_internal().await?;
+        Ok(())
+    }
+    
     async fn receive_internal(&mut self) -> Result<(), TinyMqttError> {
         loop {
             let mut buffer = [0u8; 1024];
@@ -233,6 +248,8 @@ impl<'a> TinyMqtt<'a> {
                     .borrow_mut()
                     .enqueue(PacketBuffer::new(packet))
                     .ok();
+            } else {
+                println!("Error decoding mqtt package");
             }
 
             if len == 0 {
@@ -246,7 +263,7 @@ impl<'a> TinyMqtt<'a> {
             let dq = self.queue.borrow_mut().dequeue();
             match dq {
                 Some((len, buffer)) => loop {
-                    println!("try sending a buffer, len = {}", len);
+                    // println!("try sending a buffer, len = {}", len);
                     // if self.socket.write(&buffer[..len]).is_ok() {
                     if self.socket.write(&buffer[..len]).await.is_ok() {
                         println!("fine");
@@ -264,7 +281,7 @@ impl<'a> Mqtt for TinyMqtt<'a> {
         let mut buf = [0u8; 1024];
         let len = encode_slice(&packet, &mut buf).unwrap();
 
-        println!("pone en cola: {}, {:?}", len, buf);
+        // println!("add to queue: {}, {:?}", len, buf);
         self.queue.borrow_mut().enqueue((len, buf)).ok();
         Ok(())
     }

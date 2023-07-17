@@ -3,6 +3,7 @@
 #![feature(type_alias_impl_trait)]
 
 pub use esp32c3_hal as hal;
+use mqttrust::SubscribeTopic;
 
 // use embassy_executor::_export::StaticCell;
 
@@ -17,6 +18,7 @@ use embassy_net::{Config, Ipv4Address, Ipv4Cidr, Stack, StackResources};
 
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, raw::NoopRawMutex, NoopMutex};
 use embassy_sync::channel::Channel;
+use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use embedded_svc::wifi::{ClientConfiguration, Configuration, Wifi};
 use esp_backtrace as _;
@@ -67,6 +69,7 @@ pub enum Signal {
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
 
 // I2C bus static reference for sharing bus between tasks
+// https://docs.embassy.dev/embassy-embedded-hal/git/default/shared_bus/blocking/i2c/index.html)
 static I2C_BUS: StaticCell<NoopMutex<RefCell<I2C<I2C0>>>> = StaticCell::new();
 
 // si hay 1 solo core (1 solo thread)
@@ -74,6 +77,9 @@ static I2C_BUS: StaticCell<NoopMutex<RefCell<I2C<I2C0>>>> = StaticCell::new();
 // static CHANNEL: Channel<NoopRawMutex, Signal, 10> = Channel::new();
 // static CHANNEL: Channel<NoopRawMutex, u32, 10> = Channel::new();
 static CHANNEL: Channel<CriticalSectionRawMutex, Signal, 10> = Channel::new();
+
+static MQTT: StaticCell<Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>> = StaticCell::new();
+
 
 #[entry]
 fn main() -> ! {
@@ -142,13 +148,28 @@ fn main() -> ! {
 
     hal::interrupt::enable(Interrupt::I2C_EXT0, Priority::Priority1).unwrap();
 
+
+    // socket for MQTT
+    let mut rx_buffer = [0; 4096];
+    let mut tx_buffer = [0; 4096];
+    let mut socket = TcpSocket::new(&stack, &mut rx_buffer, &mut tx_buffer);
+    // let mqtt = TinyMqtt::new("esp32", socket, esp_wifi::current_millis, None);
+    // let mut mqtt = Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>;
+    // Mutex::new(RefCell::new(mqtt))
+    // let mqtt = MQTT.init(Mutex::new(RefCell::new(mqtt)));
+
+    //let mqtt = TinyMqtt::new("esp32", esp_wifi::current_millis, None, &stack);
+    let mqtt = TinyMqtt::new("esp32", socket, esp_wifi::current_millis, None, &stack);
+    let mqtt = MQTT.init(Mutex::new(RefCell::new(mqtt)));
+    
     let executor = EXECUTOR.init(Executor::new());
     executor.run(|spawner| {
         spawner.spawn(fsm()).ok();
         spawner.spawn(connection(controller)).ok();
         spawner.spawn(net_task(&stack)).ok();
         // spawner.spawn(http_task(&stack)).ok();
-        spawner.spawn(mqtt_task(&stack)).ok();
+        // spawner.spawn(mqtt_task(&stack, spawner, socket, &mqtt)).ok();
+        spawner.spawn(mqtt_task(&stack, spawner, mqtt)).ok();
         // spawner.spawn(run_i2c(i2c_dev1)).ok();
         // spawner.spawn(run_htu(i2c_dev2)).ok();
         spawner.spawn(run1(spawner)).ok();
@@ -365,9 +386,12 @@ async fn run2() {
 
 /// Embassy task to send data to MQTT server
 #[embassy_executor::task]
-async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>) {
-    let mut rx_buffer = [0; 4096];
-    let mut tx_buffer = [0; 4096];
+async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
+                   spawner: Spawner,
+                   // socket: TcpSocket<'static>) {
+                   mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>) {
+    // let mut rx_buffer = [0; 4096];
+    // klet mut tx_buffer = [0; 4096];
 
     // Wait until network is connected
     loop {
@@ -388,39 +412,93 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>) {
     }
 
     loop {
+        // let mut tmqtt = TinyMqtt::new("esp32", esp_wifi::current_millis, None, &stack);
+
         // Open TCP socket to MQTT server test.mosquitto.org:  91.121.93.94:1883
-        let mut socket = TcpSocket::new(&stack, &mut rx_buffer, &mut tx_buffer);
-        socket.set_timeout(Some(Duration::from_secs(30)));
+        // let mut socket = TcpSocket::new(&stack, &mut rx_buffer, &mut tx_buffer);
         let remote_endpoint = (Ipv4Address::new(91, 121, 93, 94), 1883);
         println!("connecting socket...");
-        let r = socket.connect(remote_endpoint).await;
-        if let Err(e) = r {
-            println!("connect error: {:?}", e);
-            // keep trying to open socket
-            Timer::after(Duration::from_millis(5_000)).await;
-            continue;
+        {
+            let shared = mqtt.lock().await;
+            shared.borrow_mut().socket.set_timeout(Some(Duration::from_secs(30)));
+            let r = shared.borrow_mut().socket.connect(remote_endpoint).await;
+            if let Err(e) = r {
+                println!("connect error: {:?}", e);
+                // keep trying to open socket
+                Timer::after(Duration::from_millis(5_000)).await;
+                continue;
+            }
+            println!("TCP socket connected to MQTT server!");
         }
-        println!("TCP socket connected to MQTT server!");
+
 
         // Send connect MQTT package to server
-        let mut mqtt = TinyMqtt::new("esp32", socket, esp_wifi::current_millis, None);
-        if let Err(e) = mqtt.connect(
-            // Ipv4Address::new(52, 54, 163, 195), // io.adafruit.com
-            remote_endpoint.0,
-            // 1883,
-            remote_endpoint.1,
-            60,
-            None, // Some(ADAFRUIT_IO_USERNAME),
-            None, // Some(ADAFRUIT_IO_KEY.as_bytes()),
-        ) {
-            println!(
-                "Error connecting to MQTT server. Retrying in 10 seconds. Error is {:?}",
-                e
-            );
-            Timer::after(Duration::from_millis(10_000)).await;
-            continue;
+        // let mut tmqtt = TinyMqtt::new("esp32", socket, esp_wifi::current_millis, None);
+
+        {
+            let shared = mqtt.lock().await;
+            if let Err(e) = shared.borrow_mut().connect(
+                // Ipv4Address::new(52, 54, 163, 195), // io.adafruit.com
+                remote_endpoint.0,
+                // 1883,
+                remote_endpoint.1,
+                60,
+                None, // Some(ADAFRUIT_IO_USERNAME),
+                None, // Some(ADAFRUIT_IO_KEY.as_bytes()),
+            ) {
+                println!(
+                    "Error connecting to MQTT server. Retrying in 10 seconds. Error is {:?}",
+                    e
+                );
+                Timer::after(Duration::from_millis(10_000)).await;
+                continue;
+            }
+            println!("Connected to MQTT broker");
         }
-        println!("Connected to MQTT broker");
+
+        // start task to receive MQTT packets asynchronously
+        // let mqtt_m = Arc::from(mqtt);
+        // let mqtt_m = NoopMutex::new(RefCell::new(mqtt));
+        // let mqtt_m: Mutex<NoopRawMutex, RefCell<TinyMqtt>> = Mutex::new(RefCell::new(mqtt));
+        // let mqtt: &'static mut Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>> = MQTT.init(Mutex::new(RefCell::new(tmqtt)));
+        // let mqtt = MQTT.init(Mutex::new(RefCell::new(tmqtt)));
+        
+        // let mqttc = RefCell::new(mqtt);
+
+        // let m2 = mqtt_m.clone();
+        // let m1 = mqtt_m.;
+        // let m2 = mqtt_m.borrow();
+        // let mut mqtt_m2 = NoopMutex::new(RefCell::new(mqtt));
+        // NoopMutex<RefCell<I2C<I2C0>>>
+        // spawner.spawn(mqtt_receiver(mqtt_m.get_mut()));
+        // spawner.spawn(mqtt_receiver(&mqttc.borrow()));
+        spawner.spawn(mqtt_receiver(&mqtt));
+
+        // Subscribe to topic /command
+        let topics = [SubscribeTopic {
+            topic_path: "/embsens/command",
+            qos: mqttrust::QoS::AtLeastOnce,
+        }];
+        println!("Initial poll before sending subscribe");
+
+        {
+            let shared = mqtt.lock().await;
+            if shared.borrow_mut().poll().await.is_err() {
+                println!("Error in poll");
+            }
+            if shared.borrow_mut().subscribe(None, &topics).is_err() {
+                println!("error sending subscribe packet");
+            }
+        }
+        // el poll se hace desde la tarea mqtt_receiver
+        // loop {
+        //     // interval between polls
+        //     Timer::after(Duration::from_millis(2_000)).await;
+        //     if mqtt.get_mut().borrow_mut().poll().await.is_err() {
+        //         println!("Error in poll (subscribe)");
+        //         break;
+        //     }
+        // }
 
         // Publish MQTT message every 5 s
         let mut topic_name: heapless::String<32> = heapless::String::new();
@@ -429,35 +507,56 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>) {
         loop {
             // interval between packets
             Timer::after(Duration::from_millis(2_000)).await;
-            
+
             // process received packages and send pending packages
-            println!("iniciando poll");
-            if mqtt.poll().await.is_err() {
-                println!("Error en poll");
-                break;
-            }
+            // println!("iniciando poll");
+            // if mqtt.get_mut().borrow_mut().poll().await.is_err() {
+            //     println!("Error in poll");
+            //     break;
+            // }
 
             // prepare message payload
             let temperature = 42.0;
             let mut msg: heapless::String<32> = heapless::String::new();
             write!(msg, "{}", temperature).ok();
-            // send publish mqtt packet, with package identifier pkt_num
-            if mqtt
-                .publish_with_pid(
-                    Some(Pid::try_from(pkt_num).unwrap()),
-                    &topic_name,
-                    msg.as_bytes(),
-                    mqttrust::QoS::AtLeastOnce,
-                )
-                .is_err()
             {
-                println!("error enviando paquete");
-                // force reconnection to server
-                Timer::after(Duration::from_millis(5_000)).await;
-                break;
+                let shared = mqtt.lock().await;
+                // send publish mqtt packet, with package identifier pkt_num
+                if shared.borrow_mut()
+                    .publish_with_pid(
+                        Some(Pid::try_from(pkt_num).unwrap()),
+                        &topic_name,
+                        msg.as_bytes(),
+                        mqttrust::QoS::AtLeastOnce,
+                    )
+                    .is_err()
+                {
+                    println!("error enviando paquete");
+                    // force reconnection to server
+                    Timer::after(Duration::from_millis(5_000)).await;
+                    break;
+                }
             }
             pkt_num += 1;
         }
         Timer::after(Duration::from_millis(5_000)).await;
+    }
+}
+
+/// Embassy task to receive data from MQTT server
+#[embassy_executor::task]
+// async fn mqtt_receiver(mqtt: &mut NoopMutex<RefCell<TinyMqtt<'static>>>) {
+// async fn mqtt_receiver(mqtt: &Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>) {
+async fn mqtt_receiver(mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>) {
+    loop {
+        {
+            let shared = mqtt.lock().await;
+            if shared.borrow_mut().receive().await.is_err() {
+                println!("Error receiving data from mqtt server");
+            }
+        }
+        // mqtt.lock(|m| { m.borrow_mut() });
+        // if mqtt.get_mut().borrow_mut().receive().await.is_err() {
+        // if mqtt..borrow_mut().receive().await.is_err() {
     }
 }
