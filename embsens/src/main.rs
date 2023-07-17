@@ -72,13 +72,10 @@ static EXECUTOR: StaticCell<Executor> = StaticCell::new();
 // https://docs.embassy.dev/embassy-embedded-hal/git/default/shared_bus/blocking/i2c/index.html)
 static I2C_BUS: StaticCell<NoopMutex<RefCell<I2C<I2C0>>>> = StaticCell::new();
 
-// si hay 1 solo core (1 solo thread)
-// static CHANNEL: Channel<ThreadModeRawMutex, Signal, 10> = Channel::new();
-// static CHANNEL: Channel<NoopRawMutex, Signal, 10> = Channel::new();
-// static CHANNEL: Channel<NoopRawMutex, u32, 10> = Channel::new();
+// consider ThreadModeRawMutex or NoopRawMutex with only 1 executor
 static CHANNEL: Channel<CriticalSectionRawMutex, Signal, 10> = Channel::new();
 
-static MQTT: StaticCell<Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>> = StaticCell::new();
+// static MQTT: StaticCell<Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>> = StaticCell::new();
 
 
 #[entry]
@@ -173,7 +170,7 @@ fn main() -> ! {
     // We can use singleton macro or do it manually (but requires the long
     // static declaration.
     // let mqtt = MQTT.init(Mutex::new(RefCell::new(mqtt)));
-    let mqtt = singleton!(Mutex::new(RefCell::new(mqtt)));
+    //   let mqtt = singleton!(Mutex::new(RefCell::new(mqtt)));
 
     // TODO: why is necessary Mutex<RefCell> instead of only Mutex ?
     // We use RefCell(mqtt) to have "interior mutability*. mqtt isn't muteable
@@ -187,19 +184,24 @@ fn main() -> ! {
     
     let executor = EXECUTOR.init(Executor::new());
     executor.run(|spawner| {
+        // General coordination task
         spawner.spawn(fsm()).ok();
+
+        // Wifi and network handling tasks
         spawner.spawn(connection(controller)).ok();
         spawner.spawn(net_task(&stack)).ok();
-        // spawner.spawn(http_task(&stack)).ok();
-        // spawner.spawn(mqtt_task(&stack, spawner, socket, &mqtt)).ok();
-        // spawner.spawn(mqtt_task(&stack, spawner, mq.borrow())).ok();
-        spawner.spawn(mqtt_task(&stack, spawner, mqtt)).ok();
+
+        // Tasks to send and receive MQTT messages
+        // spawner.spawn(mqtt_task(&stack, spawner, mqtt)).ok();
         // TODO: if spawned here instead of from mqtt_task, socket may not be
         // connected yet.
-        spawner.spawn(mqtt_receiver(mqtt));
+        // spawner.spawn(mqtt_receiver(mqtt)).ok();
 
-        spawner.spawn(run_i2c(i2c_dev1)).ok();
-        spawner.spawn(run_htu(i2c_dev2)).ok();
+        // Sensor reading tasks
+        // spawner.spawn(run_i2c(i2c_dev1)).ok();
+        // spawner.spawn(run_htu(i2c_dev2)).ok();
+
+        // Test task to spawn a second one from inside
         spawner.spawn(run1(spawner)).ok();
         // spawner.spawn(run2()).ok();
     })
@@ -422,6 +424,7 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
     // klet mut tx_buffer = [0; 4096];
 
     // Wait until network is connected
+    println!("Wait until network is connected...");
     loop {
         if stack.is_link_up() {
             break;
@@ -462,7 +465,6 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
 
         // Send connect MQTT package to server
         // let mut tmqtt = TinyMqtt::new("esp32", socket, esp_wifi::current_millis, None);
-
         {
             let shared = mqtt.lock().await;
             if let Err(e) = shared.borrow_mut().connect(
@@ -485,7 +487,7 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
         }
 
         // start task to receive MQTT packets asynchronously
-        spawner.spawn(mqtt_receiver(&mqtt));
+        spawner.spawn(mqtt_receiver(&mqtt)).expect("Error spawning mqtt_receiver task");
         // spawner.spawn(mqtt_receiver(Mqttref { mqtt }));
 
         // Subscribe to topic /command
@@ -563,6 +565,7 @@ async fn mqtt_receiver(mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'stat
     loop {
         {
             let shared = mqtt.lock().await;
+            println!("Waiting for MQTT packets from server...");
             if shared.borrow_mut().receive().await.is_err() {
                 println!("Error receiving data from mqtt server");
             }
