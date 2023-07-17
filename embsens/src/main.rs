@@ -80,17 +80,6 @@ static CHANNEL: Channel<CriticalSectionRawMutex, Signal, 10> = Channel::new();
 
 static MQTT: StaticCell<Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>> = StaticCell::new();
 
-// container struct to pass multiple references to the mutex
-pub struct Mqttref<'a> {
-    mqtt: &'a Mutex<NoopRawMutex, RefCell<TinyMqtt<'a>>>,
-}
-
-impl<'a> Mqttref<'a> {
-    /// Create a new `I2cDevice`.
-    pub fn new(mqtt: &'a Mutex<NoopRawMutex, RefCell<TinyMqtt<'a>>>) -> Self {
-        Self { mqtt }
-    }
-}
 
 #[entry]
 fn main() -> ! {
@@ -181,12 +170,16 @@ fn main() -> ! {
     // a Mutex (an embassy async Mutex that can lock between await points).
     // Originall mqtt struct is consumed, new one can be shared.
     // The Mutex is stored statically for static lifetime.
+    // We can use singleton macro or do it manually (but requires the long
+    // static declaration.
     // let mqtt = MQTT.init(Mutex::new(RefCell::new(mqtt)));
     let mqtt = singleton!(Mutex::new(RefCell::new(mqtt)));
-    // let _ = mqtt.clone();
-    // let _m3 = mqtt.
-    let m1 = Mqttref::new(mqtt);
-    let _m2 = Mqttref::new(mqtt);
+
+    // TODO: why is necessary Mutex<RefCell> instead of only Mutex ?
+    // We use RefCell(mqtt) to have "interior mutability*. mqtt isn't muteable
+    // but we can still mutate it if it is inside RefCell. We guaranty that
+    // there isn't going to be concurrent access to the RefCell because it is
+    // wrapped inside the Mutex.
 
     // Now mqtt is itself a reference. We can only pass it once, but we need
     // to share it.
@@ -200,7 +193,11 @@ fn main() -> ! {
         // spawner.spawn(http_task(&stack)).ok();
         // spawner.spawn(mqtt_task(&stack, spawner, socket, &mqtt)).ok();
         // spawner.spawn(mqtt_task(&stack, spawner, mq.borrow())).ok();
-        spawner.spawn(mqtt_task(&stack, spawner, m1)).ok();
+        spawner.spawn(mqtt_task(&stack, spawner, mqtt)).ok();
+        // TODO: if spawned here instead of from mqtt_task, socket may not be
+        // connected yet.
+        spawner.spawn(mqtt_receiver(mqtt));
+
         spawner.spawn(run_i2c(i2c_dev1)).ok();
         spawner.spawn(run_htu(i2c_dev2)).ok();
         spawner.spawn(run1(spawner)).ok();
@@ -420,9 +417,7 @@ async fn run2() {
 async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
                    spawner: Spawner,
                    // socket: TcpSocket<'static>) {
-                   // mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>) {
-                   mqttref: Mqttref<'static>) {
-    let mqtt = mqttref.mqtt;
+                   mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>) {
     // let mut rx_buffer = [0; 4096];
     // klet mut tx_buffer = [0; 4096];
 
@@ -490,8 +485,8 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
         }
 
         // start task to receive MQTT packets asynchronously
-        // spawner.spawn(mqtt_receiver(&mqtt));
-        spawner.spawn(mqtt_receiver(Mqttref { mqtt }));
+        spawner.spawn(mqtt_receiver(&mqtt));
+        // spawner.spawn(mqtt_receiver(Mqttref { mqtt }));
 
         // Subscribe to topic /command
         let topics = [SubscribeTopic {
@@ -564,9 +559,7 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
 
 /// Embassy task to receive data from MQTT server
 #[embassy_executor::task]
-// async fn mqtt_receiver(mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>) {
-async fn mqtt_receiver(mqttref: Mqttref<'static>) {
-    let mqtt = mqttref.mqtt;
+async fn mqtt_receiver(mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>) {
     loop {
         {
             let shared = mqtt.lock().await;
@@ -574,8 +567,5 @@ async fn mqtt_receiver(mqttref: Mqttref<'static>) {
                 println!("Error receiving data from mqtt server");
             }
         }
-        // mqtt.lock(|m| { m.borrow_mut() });
-        // if mqtt.get_mut().borrow_mut().receive().await.is_err() {
-        // if mqtt..borrow_mut().receive().await.is_err() {
     }
 }
