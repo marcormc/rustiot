@@ -54,9 +54,14 @@ enumset = ["esp-wifi/enumset"]
 [profile.release]
 # Explicitly disable LTO which the Xtensa codegen backend has issues
 lto = "off"
+# It is necessary to build with optimization level 2 or 3 since otherwise it
+# might not even be able to connect or advertise.
 opt-level = 3
 
 
 [profile.dev]
 # Explicitly disable LTO which the Xtensa codegen backend has issues
 lto = "off"
+# It is necessary to build with optimization level 2 or 3 since otherwise it
+# might not even be able to connect or advertise.
+opt-level = 3
