@@ -1,6 +1,6 @@
 use embassy_net::tcp::TcpSocket;
-use embassy_net::Ipv4Address;
-use embedded_io::blocking::{Read, Write};
+// use embassy_net::Ipv4Address;
+// use embedded_io::blocking::{Read, Write};
 use esp_println::println;
 use esp_wifi::{compat::queue::SimpleQueue, wifi::WifiError};
 use mqttrust::{
@@ -63,22 +63,16 @@ pub struct TinyMqtt<'a> {
     // tx_buffer: [u8; 4096],
 }
 
-use esp_wifi::wifi::WifiDevice;
-use embassy_net::Stack;
-
 impl<'a> TinyMqtt<'a> {
     pub fn new(
         client_id: &'a str,
         socket: TcpSocket<'a>,
         current_millis_fn: fn() -> u64,
-        receive_callback: Option<&'a dyn Fn(&str, &[u8])>,
-        stack: &'static Stack<WifiDevice<'static>>
+        receive_callback: Option<&'a dyn Fn(&str, &[u8])>
     ) -> TinyMqtt<'a> {
         let res = TinyMqtt {
             client_id,
             socket,
-            // socket: TcpSocket::new(&stack, &mut self.rx_buffer, &mut self.tx_buffer),
-            // socket: TcpSocket::new(&stack, &mut Self::rx_buffer, &mut [0u8; 4096]),
             queue: core::cell::RefCell::new(SimpleQueue::new()),
             recv_buffer: [0u8; 1024],
             recv_index: 0,
@@ -87,27 +81,20 @@ impl<'a> TinyMqtt<'a> {
             last_sent_millis: 0,
             current_millis_fn,
             receive_callback,
-            // rx_buffer: [0; 4096],
-            // tx_buffer: [0; 4096],
         };
-        // res.socket = TcpSocket::new(&stack, &mut res.rx_buffer, &mut res.tx_buffer);
 
         res
     }
 
     pub fn connect(
         &mut self,
-        addr: Ipv4Address,
-        port: u16,
+        // addr: Ipv4Address,
+        // port: u16,
         keep_alive_secs: u16,
         username: Option<&'a str>,
         password: Option<&'a [u8]>,
     ) -> Result<(), TinyMqttError> {
         self.timeout_secs = keep_alive_secs;
-
-        // self.socket.open(addr, port).unwrap();
-        // self.socket.open(smoltcp::wire::IpAddress::Ipv4(addr), port).unwrap();
-
         let connect = Packet::Connect(Connect {
             protocol: Protocol::MQTT311,
             keep_alive: keep_alive_secs,
@@ -124,6 +111,7 @@ impl<'a> TinyMqtt<'a> {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn disconnect(&mut self) -> Result<(), TinyMqttError> {
         // self.socket.disconnect();
         self.socket.close();
@@ -210,18 +198,19 @@ impl<'a> TinyMqtt<'a> {
         Ok(())
     }
 
-    pub async fn receive(&mut self) -> Result<(), TinyMqttError> {
-        self.receive_internal().await?;
-        println!("drain packets");
-        while let Some(received) = self.recv_queue.borrow_mut().dequeue() {
-            if let Packet::Publish(publish) = received.parsed() {
-                if let Some(callback) = self.receive_callback {
-                    callback(publish.topic_name, publish.payload);
-                }
-            }
-        }
-        Ok(())
-    }
+    // This is no longer used. We need poll() to keep the periodic pings
+    // pub async fn receive(&mut self) -> Result<(), TinyMqttError> {
+    //     self.receive_internal().await?;
+    //     println!("drain packets");
+    //     while let Some(received) = self.recv_queue.borrow_mut().dequeue() {
+    //         if let Packet::Publish(publish) = received.parsed() {
+    //             if let Some(callback) = self.receive_callback {
+    //                 callback(publish.topic_name, publish.payload);
+    //             }
+    //         }
+    //     }
+    //     Ok(())
+    // }
     
     async fn receive_internal(&mut self) -> Result<(), TinyMqttError> {
         loop {

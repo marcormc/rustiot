@@ -162,7 +162,7 @@ fn main() -> ! {
     let socket = TcpSocket::new(&stack, rx_buffer, tx_buffer);
 
     // Library for MQTT access.
-    let mqtt = TinyMqtt::new("esp32", socket, esp_wifi::current_millis, None, &stack);
+    let mqtt = TinyMqtt::new("esp32", socket, esp_wifi::current_millis, None);
     // But is can't be shared between tasks in this way, so we wrap it with
     // a Mutex (an embassy async Mutex that can lock between await points).
     // Originall mqtt struct is consumed, new one can be shared.
@@ -192,14 +192,15 @@ fn main() -> ! {
         spawner.spawn(net_task(&stack)).ok();
 
         // Tasks to send and receive MQTT messages
-        spawner.spawn(mqtt_task(&stack, spawner, mqtt)).ok();
+        // spawner.spawn(mqtt_task(&stack, spawner, mqtt)).ok();
+        spawner.spawn(mqtt_task(&stack, mqtt)).ok();
         // TODO: if spawned here instead of from mqtt_task, socket may not be
         // connected yet.
         spawner.spawn(mqtt_receiver(mqtt)).ok();
 
         // Sensor reading tasks
-        // spawner.spawn(run_i2c(i2c_dev1)).ok();
-        // spawner.spawn(run_htu(i2c_dev2)).ok();
+        spawner.spawn(run_i2c(i2c_dev1)).ok();
+        spawner.spawn(run_htu(i2c_dev2)).ok();
 
         // Test task to spawn a second one from inside
         // spawner.spawn(run1(spawner)).ok();
@@ -417,7 +418,7 @@ async fn run2() {
 /// Embassy task to send data to MQTT server
 #[embassy_executor::task]
 async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
-                   spawner: Spawner,
+                   // spawner: Spawner,
                    // socket: TcpSocket<'static>) {
                    mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>) {
     // let mut rx_buffer = [0; 4096];
@@ -468,10 +469,8 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
         {
             let shared = mqtt.lock().await;
             if let Err(e) = shared.borrow_mut().connect(
-                // Ipv4Address::new(52, 54, 163, 195), // io.adafruit.com
-                remote_endpoint.0,
-                // 1883,
-                remote_endpoint.1,
+                // remote_endpoint.0,
+                // remote_endpoint.1,
                 60,
                 None, // Some(ADAFRUIT_IO_USERNAME),
                 None, // Some(ADAFRUIT_IO_KEY.as_bytes()),
