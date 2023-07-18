@@ -170,7 +170,7 @@ fn main() -> ! {
     // We can use singleton macro or do it manually (but requires the long
     // static declaration.
     // let mqtt = MQTT.init(Mutex::new(RefCell::new(mqtt)));
-    //   let mqtt = singleton!(Mutex::new(RefCell::new(mqtt)));
+    let mqtt: &Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>> = singleton!(Mutex::new(RefCell::new(mqtt)));
 
     // TODO: why is necessary Mutex<RefCell> instead of only Mutex ?
     // We use RefCell(mqtt) to have "interior mutability*. mqtt isn't muteable
@@ -192,17 +192,17 @@ fn main() -> ! {
         spawner.spawn(net_task(&stack)).ok();
 
         // Tasks to send and receive MQTT messages
-        // spawner.spawn(mqtt_task(&stack, spawner, mqtt)).ok();
+        spawner.spawn(mqtt_task(&stack, spawner, mqtt)).ok();
         // TODO: if spawned here instead of from mqtt_task, socket may not be
         // connected yet.
-        // spawner.spawn(mqtt_receiver(mqtt)).ok();
+        spawner.spawn(mqtt_receiver(mqtt)).ok();
 
         // Sensor reading tasks
         // spawner.spawn(run_i2c(i2c_dev1)).ok();
         // spawner.spawn(run_htu(i2c_dev2)).ok();
 
         // Test task to spawn a second one from inside
-        spawner.spawn(run1(spawner)).ok();
+        // spawner.spawn(run1(spawner)).ok();
         // spawner.spawn(run2()).ok();
     })
 }
@@ -483,40 +483,64 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
                 Timer::after(Duration::from_millis(10_000)).await;
                 continue;
             }
+
+            // TODO: get the ACK (remove this)
+            // Timer::after(Duration::from_millis(5_000)).await;
+            // if shared.borrow_mut().poll().await.is_err() {
+            //     println!("Error in connect");
+            //     break;
+            // }
             println!("Connected to MQTT broker");
         }
 
         // start task to receive MQTT packets asynchronously
-        spawner.spawn(mqtt_receiver(&mqtt)).expect("Error spawning mqtt_receiver task");
-        // spawner.spawn(mqtt_receiver(Mqttref { mqtt }));
+        // spawner.spawn(mqtt_receiver(&mqtt)).expect("Error spawning mqtt_receiver task");
 
         // Subscribe to topic /command
         let topics = [SubscribeTopic {
             topic_path: "/embsens/command",
             qos: mqttrust::QoS::AtLeastOnce,
         }];
-        println!("Initial poll before sending subscribe");
-
+        Timer::after(Duration::from_millis(2_000)).await;
+        
         {
             let shared = mqtt.lock().await;
-            if shared.borrow_mut().poll().await.is_err() {
-                println!("Error in poll");
-            }
+            // println!("Initial poll before sending subscribe");
+            // if shared.borrow_mut().poll().await.is_err() {
+            //     println!("Error in poll");
+            // }
             if shared.borrow_mut().subscribe(None, &topics).is_err() {
                 println!("error sending subscribe packet");
             }
+        
+            // TODO: get tge ACK, remove this
+            // Timer::after(Duration::from_millis(2_000)).await;
+            // if shared.borrow_mut().poll().await.is_err() {
+            //     println!("Error in poll (subscribe)");
+            //     break;
+            // }
         }
-        // el poll se hace desde la tarea mqtt_receiver
+        println!("Subscribe sent");
+
+        // TODO: get published messages from server, remove this
+        // loop {
+        //     Timer::after(Duration::from_millis(5_000)).await;
+        //     println!("waiting in task mqtt_task");
+        // }
         // loop {
         //     // interval between polls
         //     Timer::after(Duration::from_millis(2_000)).await;
-        //     if mqtt.get_mut().borrow_mut().poll().await.is_err() {
-        //         println!("Error in poll (subscribe)");
-        //         break;
+        //     {
+        //         let shared = mqtt.lock().await;
+        //         if shared.borrow_mut().poll().await.is_err() {
+        //             println!("Error in poll (subscribe)");
+        //             break;
+        //         }
         //     }
         // }
 
         // Publish MQTT message every 5 s
+        println!("Starting publish");
         let mut topic_name: heapless::String<32> = heapless::String::new();
         write!(topic_name, "/embsens/test{}", 1).ok();
         let mut pkt_num = 10;
@@ -538,6 +562,7 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
             {
                 let shared = mqtt.lock().await;
                 // send publish mqtt packet, with package identifier pkt_num
+                println!("Publishing temperature.");
                 if shared.borrow_mut()
                     .publish_with_pid(
                         Some(Pid::try_from(pkt_num).unwrap()),
@@ -547,11 +572,17 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
                     )
                     .is_err()
                 {
-                    println!("error enviando paquete");
+                    println!("Error sending package.");
                     // force reconnection to server
                     Timer::after(Duration::from_millis(5_000)).await;
                     break;
                 }
+                // TODO: get the ACK (remove this)
+                // Timer::after(Duration::from_millis(1_000)).await;
+                // if shared.borrow_mut().poll().await.is_err() {
+                //     println!("Error in poll (publish ack)");
+                //     break;
+                // }
             }
             pkt_num += 1;
         }
@@ -559,16 +590,26 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
     }
 }
 
+// use smoltcp::socket::tcp::State;
+use embassy_net::tcp::State;
+    
 /// Embassy task to receive data from MQTT server
 #[embassy_executor::task]
 async fn mqtt_receiver(mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>) {
     loop {
         {
             let shared = mqtt.lock().await;
-            println!("Waiting for MQTT packets from server...");
-            if shared.borrow_mut().receive().await.is_err() {
-                println!("Error receiving data from mqtt server");
+            let state = shared.borrow_mut().socket.state();
+            if state == State::Established { 
+                println!("Waiting for MQTT packets from server...");
+                // if shared.borrow_mut().receive().await.is_err() {
+                if shared.borrow_mut().poll().await.is_err() {
+                    println!("Error receiving data from mqtt server");
+                }
+            } else {
+                println!("Socket not connected yet...");
             }
         }
+        Timer::after(Duration::from_millis(1000)).await;
     }
 }

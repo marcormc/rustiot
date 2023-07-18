@@ -193,25 +193,33 @@ impl<'a> TinyMqtt<'a> {
         self.send_internal().await?;
 
         // println!("receive_internal");
-        // self.receive_internal().await?;
+        self.receive_internal().await?;
 
         // // just drain the received packets for now
-        // println!("drain packets");
-        // if drain_receive_queue {
-        //     while let Some(received) = self.recv_queue.borrow_mut().dequeue() {
-        //         if let Packet::Publish(publish) = received.parsed() {
-        //             if let Some(callback) = self.receive_callback {
-        //                 callback(publish.topic_name, publish.payload);
-        //             }
-        //         }
-        //     }
-        // }
+        println!("drain packets");
+        if drain_receive_queue {
+            while let Some(received) = self.recv_queue.borrow_mut().dequeue() {
+                if let Packet::Publish(publish) = received.parsed() {
+                    if let Some(callback) = self.receive_callback {
+                        callback(publish.topic_name, publish.payload);
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
 
     pub async fn receive(&mut self) -> Result<(), TinyMqttError> {
         self.receive_internal().await?;
+        println!("drain packets");
+        while let Some(received) = self.recv_queue.borrow_mut().dequeue() {
+            if let Packet::Publish(publish) = received.parsed() {
+                if let Some(callback) = self.receive_callback {
+                    callback(publish.topic_name, publish.payload);
+                }
+            }
+        }
         Ok(())
     }
     
