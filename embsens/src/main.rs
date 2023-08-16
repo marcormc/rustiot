@@ -2,25 +2,19 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
-pub use esp32c3_hal as hal;
-use mqttrust::SubscribeTopic;
-
-// use embassy_executor::_export::StaticCell;
-
+use crate::tiny_mqtt::TinyMqtt;
 use core::cell::RefCell;
+use core::fmt::Write;
 use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
-use embassy_executor::{Executor, Spawner};
+use embassy_executor::Executor;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, Ipv4Address, Ipv4Cidr, Stack, StackResources};
-// use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-// si hay 1 solo core (1 solo thread) (feature cortex-m)
-// use embassy_sync::blocking_mutex::raw::thread_mode::ThreadModeRawMutex;
-
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, raw::NoopRawMutex, NoopMutex};
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use embedded_svc::wifi::{ClientConfiguration, Configuration, Wifi};
+pub use esp32c3_hal as hal;
 use esp_backtrace as _;
 use esp_println::logger::init_logger;
 use esp_println::println;
@@ -37,11 +31,9 @@ use hal::{
     Priority, Rng, Rtc, IO,
 };
 use icm42670::{prelude::*, Address, Icm42670};
-use static_cell::StaticCell;
-
-use crate::tiny_mqtt::TinyMqtt;
-use core::fmt::Write;
 use mqttrust::encoding::v4::Pid;
+use mqttrust::SubscribeTopic;
+use static_cell::StaticCell;
 mod tiny_mqtt;
 
 const SSID: &str = env!("SSID");
@@ -56,7 +48,6 @@ macro_rules! singleton {
     }};
 }
 
-// #[derive(Debug, Clone)]
 #[derive(Debug)]
 pub enum Signal {
     WifiStaConnected,
@@ -68,15 +59,9 @@ pub enum Signal {
 
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
 
-// I2C bus static reference for sharing bus between tasks
-// https://docs.embassy.dev/embassy-embedded-hal/git/default/shared_bus/blocking/i2c/index.html)
 static I2C_BUS: StaticCell<NoopMutex<RefCell<I2C<I2C0>>>> = StaticCell::new();
 
-// consider ThreadModeRawMutex or NoopRawMutex with only 1 executor
 static CHANNEL: Channel<CriticalSectionRawMutex, Signal, 10> = Channel::new();
-
-// static MQTT: StaticCell<Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>> = StaticCell::new();
-
 
 #[entry]
 fn main() -> ! {
@@ -104,19 +89,15 @@ fn main() -> ! {
     )
     .unwrap();
 
-    // let wifi = examples_util::get_wifi!(peripherals);
     let (wifi, _) = peripherals.RADIO.split();
     let (wifi_interface, controller) = esp_wifi::wifi::new_with_mode(&init, wifi, WifiMode::Sta);
 
     let timer_group0 = TimerGroup::new(peripherals.TIMG0, &clocks, &mut peripheral_clock_control);
     embassy::init(&clocks, timer_group0.timer0);
-
-    // let config = Config::Dhcp(Default::default());
     let config = Config::dhcpv4(Default::default());
+    let seed = 1234;
 
-    let seed = 1234; // very random, very secure seed
-
-    // Init network stack
+    // Initialize network stack
     let stack = &*singleton!(Stack::new(
         wifi_interface,
         config,
@@ -131,7 +112,6 @@ fn main() -> ! {
         io.pins.gpio10,
         io.pins.gpio8,
         400u32.kHz(),
-        // &mut system.peripheral_clock_control,
         &mut peripheral_clock_control,
         &clocks,
     );
@@ -139,49 +119,26 @@ fn main() -> ! {
     let i2c_bus = NoopMutex::new(RefCell::new(i2c));
     let i2c_bus = I2C_BUS.init(i2c_bus);
 
-    // share the i2c bus between devices in embassy (sync)
+    // Share the i2c bus between devices in embassy (sync)
     let i2c_dev1 = I2cDevice::new(i2c_bus);
     let i2c_dev2 = I2cDevice::new(i2c_bus);
 
     hal::interrupt::enable(Interrupt::I2C_EXT0, Priority::Priority1).unwrap();
 
     // Socket for MQTT.
-    // Memory for buffers and the own socket is statically initized here for
+    // Memory for buffers and socket is statically initized here for
     // static lifetile.
-    // Create rx/tx buffers static for them to have static lifetime.
-    // singleton macro uses StaticCell to reserve memory statically and allow
-    // for dynamic initialization at runtime. Lifetime will be static but they
-    // can only be retrieved once (so no globally accessible and once we checkout
-    // the reference here we leverage the borrow checker to pass ownership to
-    // the part of the program that uses it).
     let rx_buffer = singleton!([0u8; 4096]);
     let tx_buffer = singleton!([0u8; 4096]);
-    // let mut rx_buffer = [0; 4096];   // this wouldn't live long enough
-    // let mut tx_buffer = [0; 4096];   // this wouwon't live long enough
-    // The socket object will be moved, so no lifetime problem
     let socket = TcpSocket::new(&stack, rx_buffer, tx_buffer);
 
     // Library for MQTT access.
     let mqtt = TinyMqtt::new("esp32", socket, esp_wifi::current_millis, None);
     // But is can't be shared between tasks in this way, so we wrap it with
     // a Mutex (an embassy async Mutex that can lock between await points).
-    // Originall mqtt struct is consumed, new one can be shared.
-    // The Mutex is stored statically for static lifetime.
-    // We can use singleton macro or do it manually (but requires the long
-    // static declaration.
-    // let mqtt = MQTT.init(Mutex::new(RefCell::new(mqtt)));
-    let mqtt: &Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>> = singleton!(Mutex::new(RefCell::new(mqtt)));
+    let mqtt: &Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>> =
+        singleton!(Mutex::new(RefCell::new(mqtt)));
 
-    // TODO: why is necessary Mutex<RefCell> instead of only Mutex ?
-    // We use RefCell(mqtt) to have "interior mutability*. mqtt isn't muteable
-    // but we can still mutate it if it is inside RefCell. We guaranty that
-    // there isn't going to be concurrent access to the RefCell because it is
-    // wrapped inside the Mutex.
-
-    // Now mqtt is itself a reference. We can only pass it once, but we need
-    // to share it.
-    // let mq = RefCell::new(mqtt);
-    
     let executor = EXECUTOR.init(Executor::new());
     executor.run(|spawner| {
         // General coordination task
@@ -192,19 +149,12 @@ fn main() -> ! {
         spawner.spawn(net_task(&stack)).ok();
 
         // Tasks to send and receive MQTT messages
-        // spawner.spawn(mqtt_task(&stack, spawner, mqtt)).ok();
         spawner.spawn(mqtt_task(&stack, mqtt)).ok();
-        // TODO: if spawned here instead of from mqtt_task, socket may not be
-        // connected yet.
         spawner.spawn(mqtt_receiver(mqtt)).ok();
 
         // Sensor reading tasks
         spawner.spawn(run_i2c(i2c_dev1)).ok();
         spawner.spawn(run_htu(i2c_dev2)).ok();
-
-        // Test task to spawn a second one from inside
-        // spawner.spawn(run1(spawner)).ok();
-        // spawner.spawn(run2()).ok();
     })
 }
 
@@ -288,9 +238,7 @@ async fn http_task(stack: &'static Stack<WifiDevice<'static>>) {
 
     loop {
         Timer::after(Duration::from_millis(1_000)).await;
-
         let mut socket = TcpSocket::new(&stack, &mut rx_buffer, &mut tx_buffer);
-
         socket.set_timeout(Some(Duration::from_secs(10)));
 
         let remote_endpoint = (Ipv4Address::new(142, 250, 185, 115), 80);
@@ -339,7 +287,6 @@ async fn run_i2c(i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) {
         println!(
             "ACCEL  =  X: {:+.04} Y: {:+.04} Z: {:+.04}\t\tGYRO  =  X: {:+.04} Y: {:+.04} Z: {:+.04}",
             accel_norm.x, accel_norm.y, accel_norm.z, gyro_norm.x, gyro_norm.y, gyro_norm.z);
-        // delay.delay_ms(100u32);
         CHANNEL
             .send(Signal::AccelDataData([
                 accel_norm.x,
@@ -365,14 +312,13 @@ async fn run_htu(mut i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) 
 
     loop {
         Timer::after(Duration::from_millis(4000)).await;
-        // medición de temperatura
+        // Temperature measurement
         let mut buf = [0u8; 2];
         i2c.write(SI7021_I2C_ADDRESS, &[MEASURE_TEMPERATURE])
             .unwrap();
         Timer::after(Duration::from_millis(50)).await;
         i2c.read(SI7021_I2C_ADDRESS, &mut buf).unwrap();
-        // Escritura y lectura en una sola transacción: no funciona con
-        // este sensor:
+        // Write and read in one single operation
         // i2c.write_read(SI7021_I2C_ADDRESS, &[MEASURE_TEMPERATURE], &mut buf).unwrap();
         let word = u16::from_be_bytes(buf);
         let temp: f32 = 175.72 * word as f32 / 65536.0 - 46.85;
@@ -383,8 +329,7 @@ async fn run_htu(mut i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) 
             .unwrap();
         Timer::after(Duration::from_millis(50)).await;
         i2c.read(SI7021_I2C_ADDRESS, &mut buf).unwrap();
-        // Escritura y lectura en una sola transacción: no funciona con
-        // este sensor:
+        // Write and read in one single operation
         // i2c.write_read(SI7021_I2C_ADDRESS, &[MEASURE_TEMPERATURE], &mut buf).unwrap();
         let word = u16::from_be_bytes(buf);
         let rel_hum = 125.0 * word as f32 / 65536.0 - 6.0;
@@ -396,34 +341,12 @@ async fn run_htu(mut i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) 
     }
 }
 
-/// Example additional Embassy task. Periodically print message.
-#[embassy_executor::task]
-async fn run1(spawner: Spawner) {
-    spawner.spawn(run2()).ok();
-    loop {
-        println!("Hello fron embassy task run1.");
-        Timer::after(Duration::from_millis(1_000)).await;
-    }
-}
-
-/// Example additional Embassy task. Periodically print message.
-#[embassy_executor::task]
-async fn run2() {
-    loop {
-        println!("Hello fron embassy task run2.");
-        Timer::after(Duration::from_millis(5_000)).await;
-    }
-}
-
 /// Embassy task to send data to MQTT server
 #[embassy_executor::task]
-async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
-                   // spawner: Spawner,
-                   // socket: TcpSocket<'static>) {
-                   mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>) {
-    // let mut rx_buffer = [0; 4096];
-    // klet mut tx_buffer = [0; 4096];
-
+async fn mqtt_task(
+    stack: &'static Stack<WifiDevice<'static>>,
+    mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>,
+) {
     // Wait until network is connected
     println!("Wait until network is connected...");
     loop {
@@ -444,15 +367,14 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
     }
 
     loop {
-        // let mut tmqtt = TinyMqtt::new("esp32", esp_wifi::current_millis, None, &stack);
-
-        // Open TCP socket to MQTT server test.mosquitto.org:  91.121.93.94:1883
-        // let mut socket = TcpSocket::new(&stack, &mut rx_buffer, &mut tx_buffer);
         let remote_endpoint = (Ipv4Address::new(91, 121, 93, 94), 1883);
         println!("connecting socket...");
         {
             let shared = mqtt.lock().await;
-            shared.borrow_mut().socket.set_timeout(Some(Duration::from_secs(30)));
+            shared
+                .borrow_mut()
+                .socket
+                .set_timeout(Some(Duration::from_secs(30)));
             let r = shared.borrow_mut().socket.connect(remote_endpoint).await;
             if let Err(e) = r {
                 println!("connect error: {:?}", e);
@@ -463,18 +385,10 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
             println!("TCP socket connected to MQTT server!");
         }
 
-
         // Send connect MQTT package to server
-        // let mut tmqtt = TinyMqtt::new("esp32", socket, esp_wifi::current_millis, None);
         {
             let shared = mqtt.lock().await;
-            if let Err(e) = shared.borrow_mut().connect(
-                // remote_endpoint.0,
-                // remote_endpoint.1,
-                60,
-                None, // Some(ADAFRUIT_IO_USERNAME),
-                None, // Some(ADAFRUIT_IO_KEY.as_bytes()),
-            ) {
+            if let Err(e) = shared.borrow_mut().connect(60, None, None) {
                 println!(
                     "Error connecting to MQTT server. Retrying in 10 seconds. Error is {:?}",
                     e
@@ -482,18 +396,8 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
                 Timer::after(Duration::from_millis(10_000)).await;
                 continue;
             }
-
-            // TODO: get the ACK (remove this)
-            // Timer::after(Duration::from_millis(5_000)).await;
-            // if shared.borrow_mut().poll().await.is_err() {
-            //     println!("Error in connect");
-            //     break;
-            // }
             println!("Connected to MQTT broker");
         }
-
-        // start task to receive MQTT packets asynchronously
-        // spawner.spawn(mqtt_receiver(&mqtt)).expect("Error spawning mqtt_receiver task");
 
         // Subscribe to topic /command
         let topics = [SubscribeTopic {
@@ -501,42 +405,14 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
             qos: mqttrust::QoS::AtLeastOnce,
         }];
         Timer::after(Duration::from_millis(2_000)).await;
-        
+
         {
             let shared = mqtt.lock().await;
-            // println!("Initial poll before sending subscribe");
-            // if shared.borrow_mut().poll().await.is_err() {
-            //     println!("Error in poll");
-            // }
             if shared.borrow_mut().subscribe(None, &topics).is_err() {
                 println!("error sending subscribe packet");
             }
-        
-            // TODO: get tge ACK, remove this
-            // Timer::after(Duration::from_millis(2_000)).await;
-            // if shared.borrow_mut().poll().await.is_err() {
-            //     println!("Error in poll (subscribe)");
-            //     break;
-            // }
         }
         println!("Subscribe sent");
-
-        // TODO: get published messages from server, remove this
-        // loop {
-        //     Timer::after(Duration::from_millis(5_000)).await;
-        //     println!("waiting in task mqtt_task");
-        // }
-        // loop {
-        //     // interval between polls
-        //     Timer::after(Duration::from_millis(2_000)).await;
-        //     {
-        //         let shared = mqtt.lock().await;
-        //         if shared.borrow_mut().poll().await.is_err() {
-        //             println!("Error in poll (subscribe)");
-        //             break;
-        //         }
-        //     }
-        // }
 
         // Publish MQTT message every 5 s
         println!("Starting publish");
@@ -547,13 +423,6 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
             // interval between packets
             Timer::after(Duration::from_millis(2_000)).await;
 
-            // process received packages and send pending packages
-            // println!("iniciando poll");
-            // if mqtt.get_mut().borrow_mut().poll().await.is_err() {
-            //     println!("Error in poll");
-            //     break;
-            // }
-
             // prepare message payload
             let temperature = 42.0;
             let mut msg: heapless::String<32> = heapless::String::new();
@@ -562,7 +431,8 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
                 let shared = mqtt.lock().await;
                 // send publish mqtt packet, with package identifier pkt_num
                 println!("Publishing temperature.");
-                if shared.borrow_mut()
+                if shared
+                    .borrow_mut()
                     .publish_with_pid(
                         Some(Pid::try_from(pkt_num).unwrap()),
                         &topic_name,
@@ -576,12 +446,6 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
                     Timer::after(Duration::from_millis(5_000)).await;
                     break;
                 }
-                // TODO: get the ACK (remove this)
-                // Timer::after(Duration::from_millis(1_000)).await;
-                // if shared.borrow_mut().poll().await.is_err() {
-                //     println!("Error in poll (publish ack)");
-                //     break;
-                // }
             }
             pkt_num += 1;
         }
@@ -591,7 +455,7 @@ async fn mqtt_task(stack: &'static Stack<WifiDevice<'static>>,
 
 // use smoltcp::socket::tcp::State;
 use embassy_net::tcp::State;
-    
+
 /// Embassy task to receive data from MQTT server
 #[embassy_executor::task]
 async fn mqtt_receiver(mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>) {
@@ -599,7 +463,7 @@ async fn mqtt_receiver(mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'stat
         {
             let shared = mqtt.lock().await;
             let state = shared.borrow_mut().socket.state();
-            if state == State::Established { 
+            if state == State::Established {
                 println!("Waiting for MQTT packets from server...");
                 // if shared.borrow_mut().receive().await.is_err() {
                 if shared.borrow_mut().poll().await.is_err() {
