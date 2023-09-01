@@ -1,10 +1,7 @@
 
 use std::sync::mpsc;
 use log::*;
-use esp_idf_svc::{
-    http::server::{Configuration, EspHttpServer},
-    // errors::EspIOError,
-};
+use esp_idf_svc::http::server::{Configuration, EspHttpServer};
 use embedded_svc::{http::Method, io::Write};
 use crate::fsm::Event;
 
@@ -20,8 +17,8 @@ pub fn start_http_server(tx: &mpsc::Sender<Event>) -> EspHttpServer {
 
             // TODO: Leer formulario HTML con credenciales reales
             let event = Event::Credentials {
-                wifi_ssid: "harpoland".into(),
-                wifi_psk: "alcachofatoxica".into(),
+                wifi_ssid: "myssid".into(),
+                wifi_psk: "mypassword".into(),
                 mqtt_host: "test.mosquitto.org".into(),
                 mqtt_user: None,
                 mqtt_passwd: None,

@@ -6,11 +6,6 @@ pub mod mqtt;
 pub mod shtc3;
 pub mod wifi;
 
-// use embedded_svc::storage::RawStorage;
-// use std::sync::{Arc, Mutex};
-// use anyhow::Result;
-// use std::{borrow::Cow, convert::TryFrom, thread::sleep, time::Duration};
-// use log::{error, info, warn};
 use self::fsm::{Event, Fsm};
 use self::shtc3::start_sensor;
 use esp_idf_hal::prelude::Peripherals;
@@ -41,16 +36,12 @@ fn main() -> anyhow::Result<()> {
 
     info!("Inicializando wifi");
     let sysloop = EspSystemEventLoop::take()?;
-    // let mut wifi = wifi(peripherals.modem, sysloop.clone())?;
     let wifi = Box::new(EspWifi::new(peripherals.modem, sysloop.clone(), None)?);
     info!("Inicialización del wifi terminada");
 
     let (tx, rx) = mpsc::channel();
-    // configure i2c bus
-    // let pins = peripherals.pins;
     let timer = start_sensor(peripherals.pins, peripherals.i2c0, tx.clone())?;
 
-    // let mywifi = Arc::new(Mutex::new(wifi));
     thread::Builder::new()
         .name("threadfsm".to_string())
         .stack_size(8000)
@@ -72,5 +63,4 @@ fn main() -> anyhow::Result<()> {
         sleep(Duration::from_secs(10));
         info!("Inactive");
     }
-    // Ok(())
 }

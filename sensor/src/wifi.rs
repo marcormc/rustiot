@@ -17,7 +17,6 @@ pub fn wifi_sta_start(
     password: &str,
 ) -> anyhow::Result<()> {
 
-    // wifi.stop()?;
     wifi.set_configuration(&embedded_svc::wifi::Configuration::Client(
         embedded_svc::wifi::ClientConfiguration {
             ssid: ssid.into(),
@@ -26,7 +25,7 @@ pub fn wifi_sta_start(
             ..Default::default()
         },
     ))
-    .expect("Error configurando wifi sta");
+    .expect("Error configuring wifi sta");
 
     wifi.start()?;
 
@@ -56,7 +55,7 @@ pub fn wifi_sta_start(
 
     info!("Wifi DHCP info: {:?}", ip_info);
 
-    println!("Wifi sta activado {}", wifi.is_connected().unwrap());
+    println!("Wifi sta activated {}", wifi.is_connected().unwrap());
     Ok(())
 }
 
@@ -74,16 +73,10 @@ pub fn wifi_ap_start(wifi: &mut Box<EspWifi>, sysloop: &EspSystemEventLoop) -> a
 
     info!("Starting wifi...");
 
-    // let sysloop = EspSystemEventLoop::take()?;
     if !WifiWait::new(&sysloop)?
         .wait_with_timeout(Duration::from_secs(20), || wifi.is_started().unwrap())
     {
         bail!("Wifi did not start");
     }
     Ok(())
-    // info!("Connecting wifi...");
-    // println!("Connecting wifi... ***");
-
-    // wifi.connect()?;
-    // Ok(())
 }

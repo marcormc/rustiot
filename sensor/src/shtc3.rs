@@ -1,6 +1,3 @@
-// use embedded_svc::timer::TimerService;
-// use embedded_svc::timer::*;
-// use esp_idf_svc::systime::EspSystemTime;
 use crate::Event;
 use anyhow::Result;
 use esp_idf_hal::gpio::Pins;
@@ -24,14 +21,8 @@ pub struct ShtcSensor<'a> {
 pub fn start_sensor(pins: Pins, i2c: I2C0, tx: mpsc::Sender<Event>) -> Result<EspTimer> {
     info!("Starting sensor shtc3");
 
-    // let temp_sens = ShtcSensor::new(i2c);
-    // let mut temp_sensor = shtc3(i2c);
-    // let temp_sensor = shtc3(*i2c);
-    // let sensor = Arc::new(Mutex::new(temp_sensor));
-
     let sda = pins.gpio10;
     let scl = pins.gpio8;
-    // let i2c = peripherals.i2c0;
     let config = I2cConfig::new().baudrate(100.kHz().into());
     let i2c = I2cDriver::new(i2c, sda, scl, &config)?;
     let mut temp_sensor = shtc3(i2c);
@@ -50,6 +41,5 @@ pub fn start_sensor(pins: Pins, i2c: I2C0, tx: mpsc::Sender<Event>) -> Result<Es
 
     info!("Starting measurements every 5 seconds ");
     periodic_timer.every(Duration::from_secs(5))?;
-    // .expect("Error starting timer for sensor shtc3");
     Ok(periodic_timer)
 }

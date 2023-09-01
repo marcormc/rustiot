@@ -1,28 +1,13 @@
 use core::time::Duration;
 use embedded_svc::mqtt::client::{Details::Complete, Event::Received, QoS};
 use std::thread;
-// use embedded_svc::mqtt::client::QoS;
 
 use crate::fsm::Event;
 use esp_idf_svc::mqtt::client::{EspMqttClient, EspMqttMessage, MqttClientConfiguration};
-// use esp_idf_svc::mqtt::client::{EspMqttClient, MqttClientConfiguration};
 use esp_idf_sys::EspError;
 use log::{error, info, warn};
 use std::sync::mpsc;
 
-// #[toml_cfg::toml_config]
-// pub struct Config {
-//     #[default("localhost")]
-//     mqtt_host: &'static str,
-//     #[default("")]
-//     mqtt_user: &'static str,
-//     #[default("")]
-//     mqtt_pass: &'static str,
-//     #[default("")]
-//     wifi_ssid: &'static str,
-//     #[default("")]
-//     wifi_psk: &'static str,
-// }
 
 /// Starts the connection to MQTT server.
 /// It uses host, user and passwd as credentials for the server.
@@ -67,6 +52,7 @@ pub fn start_mqtt_client(
     // it is necessary ta wait a little before subscribing
     thread::sleep(Duration::from_millis(100));
     client.subscribe("/rust/command", QoS::AtLeastOnce)?;
+    // With error handling
     // let res = client.subscribe("/rust/command", QoS::AtLeastOnce)?;
     // match res {
     //     Ok(id) => {
@@ -89,14 +75,6 @@ fn process_message(message: &EspMqttMessage, tx: &mut mpsc::Sender<Event>) {
                 "Received message from MQTT server: {:?}, data: {:?}",
                 message, message_data
             );
-            // if let Ok(ColorData::BoardLed(color)) = ColorData::try_from(message_data) {
-            //     info!("{}", color);
-            //     if let Err(e) = led.set_pixel(color) {
-            //         error!("Could not set board LED: {:?}", e)
-            //     };
-            // }
-            // let command = String::try_from(message_data);
-            // let command = str::from_utf8(message_data);
             let command = String::from(std::str::from_utf8(&message_data).unwrap());
             let event = Event::RemoteCommand { command };
             // send event to the Fsm

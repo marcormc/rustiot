@@ -9,7 +9,7 @@ use std::str;
 use std::sync::mpsc;
 
 ///
-/// Estados de la máquina de estados finitos
+/// Finite state machine states
 #[derive(Debug, PartialEq)]
 pub enum State {
     Initial,
@@ -25,7 +25,7 @@ pub enum State {
     Failure,
 }
 
-/// Eventos que se pueden pasar entre threads a la máquina de estados.
+/// Events for the finite state machine. To be passed between threads
 #[derive(Debug, Clone)]
 pub enum Event {
     Credentials {
@@ -92,9 +92,6 @@ pub struct Fsm<'a> {
     pub nvs: EspDefaultNvs,
     pub httpserver: Option<EspHttpServer>,
     pub mqttc: Option<EspMqttClient>,
-    // temp_sens: ShtcSensor<'a>,
-    // i2c: I2cDriver<'a>,
-    // temp_sensor: ShtCx<Sht2Gen, I2cDriver<'a>>,
     mqtt_host: Option<String>,
     mqtt_user: Option<String>,
     mqtt_passwd: Option<String>,
@@ -106,9 +103,6 @@ impl<'a> Fsm<'a> {
         sysloop: EspSystemEventLoop,
         wifi: Box<EspWifi<'a>>,
         nvs: EspDefaultNvs,
-        //temp_sens: ShtcSensor,
-        // i2c: I2cDriver<'a>,
-        // temp_sensor: ShtCx<Sht2Gen, I2cDriver>,
     ) -> Self {
         let mut fsm = Self {
             state: State::Initial,
@@ -116,9 +110,6 @@ impl<'a> Fsm<'a> {
             sysloop,
             wifi,
             nvs,
-            //  temp_sensor,
-            // i2c,
-            // temp_sens,
             httpserver: None,
             mqttc: None,
             mqtt_host: None,
@@ -129,7 +120,6 @@ impl<'a> Fsm<'a> {
         fsm
     }
 
-    // pub fn process_event(&mut self, event: Event) -> Fsm<'a> {
     pub fn process_event(&mut self, event: Event) {
         // handle events that keep the machine in current state
         self.handle_event(&event);
@@ -162,8 +152,6 @@ impl<'a> Fsm<'a> {
                 let mqtt_host = read_nvs_string(&mut self.nvs, "mqtt_host").unwrap();
                 let mqtt_user = read_nvs_string(&mut self.nvs, "mqtt_user").unwrap();
                 let mqtt_passwd = read_nvs_string(&mut self.nvs, "mqtt_passwd").unwrap();
-                // self.temp_sens.start_measurements().expect("Error initializing sensor shtc3");
-                // self.start_sensor().expect("Error initializing sensor shtc3");
                 if let (Some(wifi_ssid), Some(wifi_psk), Some(mqtt_host)) =
                     (wifi_ssid, wifi_psk, mqtt_host)
                 {
@@ -203,8 +191,6 @@ impl<'a> Fsm<'a> {
                     self.httpserver = None
                 }
                 // store mqtt credentials in Fsm (wifi credentials not stored)
-                // self.mqtt_host = Some(mqtt_passwd.as_deref().clone());
-                // self.mqtt_user = Some(mqtt_passwd.as_deref().unwrap().to_string());
                 self.mqtt_host = Some(mqtt_host.clone());
                 self.mqtt_user = mqtt_user.clone();
                 self.mqtt_passwd = mqtt_passwd.clone();
@@ -219,14 +205,12 @@ impl<'a> Fsm<'a> {
                         .unwrap();
                 }
                 // connect to wifi using the credentials
-                // TODO: handle possible errors, retry on error, backoff
                 wifi_sta_start(&mut self.wifi, &self.sysloop, wifi_ssid, wifi_psk)
                     .expect("Error activating STA");
                 self.tx.send(Event::WifiConnected).unwrap();
             }
             State::WifiConnected => {
                 info!("State WifiConnected.");
-                // let host = self.mqtt_host.as_deref();
                 let res = start_mqtt_client(
                     self.tx.clone(),
                     self.mqtt_host.as_deref().unwrap(),
@@ -257,16 +241,12 @@ impl<'a> Fsm<'a> {
 fn read_nvs_string(nvs: &mut EspDefaultNvs, key: &str) -> Result<Option<String>, anyhow::Error> {
     if nvs.contains(key).unwrap() {
         let len = nvs.len(key).unwrap().unwrap();
-        // println!("ssid len: {}", len);
         let mut buf: [u8; 100] = [0; 100];
         nvs.get_raw(key, &mut buf)?;
-        // println!("ssid buffer: {:?}", buf);
         let value = String::from(str::from_utf8(&buf[0..len])?);
-        // println!("value: {}", value);
         Ok(Some(value))
     } else {
         warn!("Key {key} not found in NVS");
         Ok(None)
     }
-    // nvs.remove("ssid")?;
 }
