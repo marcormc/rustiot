@@ -15,7 +15,7 @@ pub fn start_http_server(tx: &mpsc::Sender<Event>) -> EspHttpServer {
             let mut response = request.into_ok_response()?;
             response.write_all(html.as_bytes())?;
 
-            // TODO: Leer formulario HTML con credenciales reales
+            // The real HTML form should be parsed here
             let event = Event::Credentials {
                 wifi_ssid: "myssid".into(),
                 wifi_psk: "mypassword".into(),
