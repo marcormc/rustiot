@@ -66,7 +66,7 @@ static CHANNEL: Channel<CriticalSectionRawMutex, Signal, 10> = Channel::new();
 #[entry]
 fn main() -> ! {
     init_logger(log::LevelFilter::Info);
-    println!("embwifis: Embassy wifi + sharing I2C bus test.");
+    println!("Rust in IoT. embsens example");
 
     let peripherals = Peripherals::take();
     let system = peripherals.SYSTEM.split();
@@ -142,7 +142,7 @@ fn main() -> ! {
     let executor = EXECUTOR.init(Executor::new());
     executor.run(|spawner| {
         // General coordination task
-        spawner.spawn(fsm()).ok();
+        spawner.spawn(fsm(mqtt)).ok();
 
         // Wifi and network handling tasks
         spawner.spawn(connection(controller)).ok();
@@ -159,10 +159,50 @@ fn main() -> ! {
 }
 
 #[embassy_executor::task]
-async fn fsm() {
+async fn fsm(mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>) {
+    // let mut topic_name: heapless::String<32> = heapless::String::new();
+    // write!(topic_name, "/embsens/temp{}", 1).ok();
+    let topic_name = "/embsens/temperature";
+    let mut pkt_num = 1;
+
     loop {
         let signal = CHANNEL.recv().await;
-        println!("Señal recibida: {:?}", signal);
+        println!("[FSM] signal received: {:?}", signal);
+        if let Signal::TempHumData { temp, hum } = signal {
+            // println!("Temperature = {}", temp);
+            // println!("Humidity = {}", hum);
+
+            // prepare message payload
+            let mut msg: heapless::String<32> = heapless::String::new();
+            write!(msg, "{}", temp).ok();
+            {
+                // this block of code limits the lock of 'shared'
+                let shared = mqtt.lock().await;
+
+                if shared.borrow_mut().ready {
+                    println!(
+                        "[FSM] publishing in {} temperature {} and humidity {}",
+                        topic_name, temp, hum
+                    );
+                    // send publish mqtt packet, with package identifier pkt_num
+                    if shared
+                        .borrow_mut()
+                        .publish_with_pid(
+                            Some(Pid::try_from(pkt_num).unwrap()),
+                            &topic_name,
+                            msg.as_bytes(),
+                            mqttrust::QoS::AtLeastOnce,
+                        )
+                        .is_err()
+                    {
+                        println!("[FSM] Error sending MQTT temperature.");
+                    }
+                } else {
+                    println!("[FSM] mqtt connection not ready to send");
+                }
+            }
+            pkt_num += 1;
+        }
     }
 }
 
@@ -170,8 +210,11 @@ async fn fsm() {
 /// It keep trying every 5 s in case of error.
 #[embassy_executor::task]
 async fn connection(mut controller: WifiController<'static>) {
-    println!("start connection task");
-    println!("Device capabilities: {:?}", controller.get_capabilities());
+    println!("[CON] start connection task");
+    println!(
+        "[CON] Device capabilities: {:?}",
+        controller.get_capabilities()
+    );
     loop {
         match esp_wifi::wifi::get_wifi_state() {
             WifiState::StaConnected => {
@@ -188,19 +231,19 @@ async fn connection(mut controller: WifiController<'static>) {
                 ..Default::default()
             });
             controller.set_configuration(&client_config).unwrap();
-            println!("Starting wifi");
+            println!("[CON] Starting wifi");
             controller.start().await.unwrap();
-            println!("Wifi started!");
+            println!("[CON] Wifi started!");
         }
-        println!("About to connect...");
+        println!("[CON] About to connect...");
 
         match controller.connect().await {
             Ok(_) => {
-                println!("Wifi connected!");
+                println!("[CON] Wifi connected!");
                 CHANNEL.send(Signal::WifiStaConnected).await;
             }
             Err(e) => {
-                println!("Failed to connect to wifi: {e:?}");
+                println!("[CON] Failed to connect to wifi: {e:?}");
                 Timer::after(Duration::from_millis(5000)).await
             }
         }
@@ -213,69 +256,6 @@ async fn net_task(stack: &'static Stack<WifiDevice<'static>>) {
     stack.run().await
 }
 
-/// Connects to HTTP server to retrieve a web page
-#[embassy_executor::task]
-async fn http_task(stack: &'static Stack<WifiDevice<'static>>) {
-    let mut rx_buffer = [0; 4096];
-    let mut tx_buffer = [0; 4096];
-
-    loop {
-        if stack.is_link_up() {
-            break;
-        }
-        Timer::after(Duration::from_millis(500)).await;
-    }
-
-    println!("Waiting to get IP address...");
-    loop {
-        if let Some(config) = stack.config_v4() {
-            println!("Got IP: {}", config.address);
-            CHANNEL.send(Signal::WifiConnected(config.address)).await;
-            break;
-        }
-        Timer::after(Duration::from_millis(500)).await;
-    }
-
-    loop {
-        Timer::after(Duration::from_millis(1_000)).await;
-        let mut socket = TcpSocket::new(&stack, &mut rx_buffer, &mut tx_buffer);
-        socket.set_timeout(Some(Duration::from_secs(10)));
-
-        let remote_endpoint = (Ipv4Address::new(142, 250, 185, 115), 80);
-        println!("connecting...");
-        let r = socket.connect(remote_endpoint).await;
-        if let Err(e) = r {
-            println!("connect error: {:?}", e);
-            continue;
-        }
-        println!("connected!");
-        let mut buf = [0; 1024];
-        loop {
-            use embedded_io::asynch::Write;
-            let r = socket
-                .write_all(b"GET / HTTP/1.0\r\nHost: www.mobile-j.de\r\n\r\n")
-                .await;
-            if let Err(e) = r {
-                println!("write error: {:?}", e);
-                break;
-            }
-            let n = match socket.read(&mut buf).await {
-                Ok(0) => {
-                    println!("read EOF");
-                    break;
-                }
-                Ok(n) => n,
-                Err(e) => {
-                    println!("read error: {:?}", e);
-                    break;
-                }
-            };
-            println!("{}", core::str::from_utf8(&buf[..n]).unwrap());
-        }
-        Timer::after(Duration::from_millis(3000)).await;
-    }
-}
-
 /// Embassy task to read accelerometer sensor on board (ICM42670)
 #[embassy_executor::task]
 async fn run_i2c(i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) {
@@ -285,7 +265,7 @@ async fn run_i2c(i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) {
         let accel_norm = icm.accel_norm().unwrap();
         let gyro_norm = icm.gyro_norm().unwrap();
         println!(
-            "ACCEL  =  X: {:+.04} Y: {:+.04} Z: {:+.04}\t\tGYRO  =  X: {:+.04} Y: {:+.04} Z: {:+.04}",
+            "[ACEL] accelerations  =  X: {:+.04} Y: {:+.04} Z: {:+.04}\t\tGYRO  =  X: {:+.04} Y: {:+.04} Z: {:+.04}",
             accel_norm.x, accel_norm.y, accel_norm.z, gyro_norm.x, gyro_norm.y, gyro_norm.z);
         CHANNEL
             .send(Signal::AccelDataData([
@@ -322,7 +302,7 @@ async fn run_htu(mut i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) 
         // i2c.write_read(SI7021_I2C_ADDRESS, &[MEASURE_TEMPERATURE], &mut buf).unwrap();
         let word = u16::from_be_bytes(buf);
         let temp: f32 = 175.72 * word as f32 / 65536.0 - 46.85;
-        println!("buf {:?}, word: {}, temperatura: {}", buf, word, temp);
+        println!("[HTU] buf {:?}, word: {}, temperatura: {}", buf, word, temp);
 
         // medición de humedad
         i2c.write(SI7021_I2C_ADDRESS, &[MEASURE_RELATIVE_HUMIDITY])
@@ -334,7 +314,7 @@ async fn run_htu(mut i2c: I2cDevice<'static, NoopRawMutex, I2C<'static, I2C0>>) 
         let word = u16::from_be_bytes(buf);
         let rel_hum = 125.0 * word as f32 / 65536.0 - 6.0;
         // rel_hum = rel_hum.max(0.0).min(100.0);
-        println!("buf {:?}, word: {}, humedad: {}", buf, word, rel_hum);
+        println!("[HTU] buf {:?}, word: {}, humedad: {}", buf, word, rel_hum);
         CHANNEL
             .send(Signal::TempHumData { temp, hum: rel_hum })
             .await;
@@ -348,7 +328,7 @@ async fn mqtt_task(
     mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'static>>>,
 ) {
     // Wait until network is connected
-    println!("Wait until network is connected...");
+    println!("[MQTT] Wait until network is connected...");
     loop {
         if stack.is_link_up() {
             break;
@@ -357,7 +337,7 @@ async fn mqtt_task(
     }
 
     // Wait until network has IPv4 configuration (interface has IP address)
-    println!("Waiting to get IP address...");
+    println!("[MQTT] Waiting to get IP address...");
     loop {
         if let Some(config) = stack.config_v4() {
             println!("Got IP: {}", config.address);
@@ -368,7 +348,7 @@ async fn mqtt_task(
 
     loop {
         let remote_endpoint = (Ipv4Address::new(91, 121, 93, 94), 1883);
-        println!("connecting socket...");
+        println!("[MQTT] connecting socket...");
         {
             let shared = mqtt.lock().await;
             shared
@@ -377,12 +357,12 @@ async fn mqtt_task(
                 .set_timeout(Some(Duration::from_secs(30)));
             let r = shared.borrow_mut().socket.connect(remote_endpoint).await;
             if let Err(e) = r {
-                println!("connect error: {:?}", e);
+                println!("[MQTT] connect error: {:?}", e);
                 // keep trying to open socket
                 Timer::after(Duration::from_millis(5_000)).await;
                 continue;
             }
-            println!("TCP socket connected to MQTT server!");
+            println!("[MQTT] TCP socket connected to MQTT server!");
         }
 
         // Send connect MQTT package to server
@@ -390,13 +370,13 @@ async fn mqtt_task(
             let shared = mqtt.lock().await;
             if let Err(e) = shared.borrow_mut().connect(60, None, None) {
                 println!(
-                    "Error connecting to MQTT server. Retrying in 10 seconds. Error is {:?}",
+                    "[MQTT] Error connecting to MQTT server. Retrying in 10 seconds. Error is {:?}",
                     e
                 );
                 Timer::after(Duration::from_millis(10_000)).await;
                 continue;
             }
-            println!("Connected to MQTT broker");
+            println!("[MQTT] Connected to MQTT broker");
         }
 
         // Subscribe to topic /command
@@ -409,47 +389,17 @@ async fn mqtt_task(
         {
             let shared = mqtt.lock().await;
             if shared.borrow_mut().subscribe(None, &topics).is_err() {
-                println!("error sending subscribe packet");
+                println!("[MQTT] error sending subscribe packet");
             }
         }
-        println!("Subscribe sent");
+        println!("[MQTT] Subscribe sent");
 
-        // Publish MQTT message every 5 s
-        println!("Starting publish");
-        let mut topic_name: heapless::String<32> = heapless::String::new();
-        write!(topic_name, "/embsens/test{}", 1).ok();
-        let mut pkt_num = 10;
-        loop {
-            // interval between packets
-            Timer::after(Duration::from_millis(2_000)).await;
-
-            // prepare message payload
-            let temperature = 42.0;
-            let mut msg: heapless::String<32> = heapless::String::new();
-            write!(msg, "{}", temperature).ok();
-            {
-                let shared = mqtt.lock().await;
-                // send publish mqtt packet, with package identifier pkt_num
-                println!("Publishing temperature.");
-                if shared
-                    .borrow_mut()
-                    .publish_with_pid(
-                        Some(Pid::try_from(pkt_num).unwrap()),
-                        &topic_name,
-                        msg.as_bytes(),
-                        mqttrust::QoS::AtLeastOnce,
-                    )
-                    .is_err()
-                {
-                    println!("Error sending package.");
-                    // force reconnection to server
-                    Timer::after(Duration::from_millis(5_000)).await;
-                    break;
-                }
-            }
-            pkt_num += 1;
+        // mark the mqtt connection as ready to publish
+        {
+            let shared = mqtt.lock().await;
+            shared.borrow_mut().ready = true;
+            break;
         }
-        Timer::after(Duration::from_millis(5_000)).await;
     }
 }
 
@@ -464,13 +414,13 @@ async fn mqtt_receiver(mqtt: &'static Mutex<NoopRawMutex, RefCell<TinyMqtt<'stat
             let shared = mqtt.lock().await;
             let state = shared.borrow_mut().socket.state();
             if state == State::Established {
-                println!("Waiting for MQTT packets from server...");
+                println!("[RCV] Waiting for MQTT packets from server...");
                 // if shared.borrow_mut().receive().await.is_err() {
                 if shared.borrow_mut().poll().await.is_err() {
-                    println!("Error receiving data from mqtt server");
+                    println!("[RCV] Error receiving data from mqtt server");
                 }
             } else {
-                println!("Socket not connected yet...");
+                println!("[RCV] Socket not connected yet...");
             }
         }
         Timer::after(Duration::from_millis(1000)).await;

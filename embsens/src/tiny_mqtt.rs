@@ -56,6 +56,7 @@ pub struct TinyMqtt<'a> {
     last_sent_millis: u64,
     current_millis_fn: fn() -> u64,
     receive_callback: Option<&'a dyn Fn(&str, &[u8])>,
+    pub ready: bool,
 }
 
 impl<'a> TinyMqtt<'a> {
@@ -76,6 +77,7 @@ impl<'a> TinyMqtt<'a> {
             last_sent_millis: 0,
             current_millis_fn,
             receive_callback,
+            ready: false,
         };
 
         res
@@ -167,13 +169,12 @@ impl<'a> TinyMqtt<'a> {
             self.last_sent_millis = (self.current_millis_fn)();
         }
 
-        println!("send_internal");
+        // println!("send_internal");
         self.send_internal().await?;
 
         self.receive_internal().await?;
 
         // just drain the received packets for now
-        println!("drain packets");
         if drain_receive_queue {
             while let Some(received) = self.recv_queue.borrow_mut().dequeue() {
                 if let Packet::Publish(publish) = received.parsed() {
@@ -192,17 +193,17 @@ impl<'a> TinyMqtt<'a> {
             let mut buffer = [0u8; 1024];
             // let len = self.socket.read(&mut buffer).unwrap();
             if self.socket.can_recv() {
-                println!("can_recv true");
+                // println!("can_recv true");
                 // socket.read() won't block, there are data waiting to be read.
             } else {
-                println!("can_recv false");
+                // println!("can_recv false");
                 // nothing received in the socket, if read() is called it will
                 // block until something arrives.
                 return Ok(());
             }
             let len = self.socket.read(&mut buffer).await.unwrap();
             if len > 0 {
-                println!("got {} bytes: {:02x?}", len, &buffer[..len]);
+                // println!("got {} bytes: {:02x?}", len, &buffer[..len]);
             }
 
             self.recv_buffer[self.recv_index..][..len].copy_from_slice(&buffer[..len]);
@@ -212,7 +213,7 @@ impl<'a> TinyMqtt<'a> {
             let packet = decode_slice(data);
 
             if let Ok(Some(packet)) = packet {
-                println!("{:?}", packet);
+                println!("Packet received in /embsens/command: {:?}", packet);
                 self.recv_index = 0;
                 self.recv_queue
                     .borrow_mut()
@@ -236,7 +237,6 @@ impl<'a> TinyMqtt<'a> {
                     // println!("try sending a buffer, len = {}", len);
                     // if self.socket.write(&buffer[..len]).is_ok() {
                     if self.socket.write(&buffer[..len]).await.is_ok() {
-                        println!("fine");
                         return Ok(());
                     }
                 },
